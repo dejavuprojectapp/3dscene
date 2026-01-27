@@ -11,7 +11,10 @@ const Scene = dynamic(() => import('@/components/Scene'), {
 export default function ViewerPage() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
+  const [availableTextures, setAvailableTextures] = useState<string[]>([]);
+  const [selectedTexture, setSelectedTexture] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingTextures, setLoadingTextures] = useState(true);
 
   useEffect(() => {
     // Fetch available models from the API
@@ -27,6 +30,19 @@ export default function ViewerPage() {
       .catch(error => {
         console.error('Erro ao buscar modelos:', error);
         setLoading(false);
+      });
+
+    // Fetch available textures from the API
+    fetch('/api/textures')
+      .then(res => res.json())
+      .then(data => {
+        const textures = data.files.map((file: string) => `/textures/${file}`);
+        setAvailableTextures(textures);
+        setLoadingTextures(false);
+      })
+      .catch(error => {
+        console.error('Erro ao buscar texturas:', error);
+        setLoadingTextures(false);
       });
   }, []);
 
@@ -99,14 +115,82 @@ export default function ViewerPage() {
           
           <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-white/20">
             <p className="text-xs text-gray-400">
-              Suporta: .ply, .splat
+              Suporta: .ply, .splat, .glb
+            </p>
+          </div>
+        </div>
+
+        {/* Seção de Texturas */}
+        <div className="bg-black/50 backdrop-blur-sm p-3 sm:p-4 rounded-lg">
+          <h2 className="text-white font-semibold mb-2 sm:mb-3 text-sm sm:text-base">Texturas Disponíveis:</h2>
+          
+          {loadingTextures ? (
+            <p className="text-gray-400 text-sm">Carregando...</p>
+          ) : availableTextures.length === 0 ? (
+            <div>
+              <p className="text-yellow-400 text-sm mb-2">Nenhuma textura encontrada</p>
+              <p className="text-xs text-gray-400">
+                Coloque arquivos .png, .jpg ou .hdr em public/textures/
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="mb-3">
+                <label className="flex items-center space-x-2 cursor-pointer hover:bg-white/5 p-2 rounded">
+                  <input
+                    type="radio"
+                    name="texture"
+                    checked={selectedTexture === null}
+                    onChange={() => setSelectedTexture(null)}
+                    className="w-3 h-3 sm:w-4 sm:h-4"
+                  />
+                  <span className="text-white text-xs sm:text-sm">
+                    Nenhuma (fundo padrão)
+                  </span>
+                </label>
+              </div>
+              
+              {availableTextures.map((texture, index) => {
+                const fileName = texture.split('/').pop();
+                const isSelected = selectedTexture === texture;
+                
+                return (
+                  <label 
+                    key={texture}
+                    className="flex items-center space-x-2 cursor-pointer hover:bg-white/5 p-2 rounded"
+                  >
+                    <input
+                      type="radio"
+                      name="texture"
+                      checked={isSelected}
+                      onChange={() => setSelectedTexture(texture)}
+                      className="w-3 h-3 sm:w-4 sm:h-4"
+                    />
+                    <span className="text-white text-xs sm:text-sm">
+                      {index + 1}. {fileName}
+                    </span>
+                  </label>
+                );
+              })}
+              
+              <div className="pt-2 mt-2 border-t border-white/20">
+                <p className="text-xs text-gray-400">
+                  {selectedTexture ? `✓ ${selectedTexture.split('/').pop()}` : '○ Sem textura'}
+                </p>
+              </div>
+            </div>
+          )}
+          
+          <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-white/20">
+            <p className="text-xs text-gray-400">
+              Suporta: .png, .jpg, .hdr
             </p>
           </div>
         </div>
       </div>
 
       {!loading && selectedModels.length > 0 && (
-        <Scene modelPaths={selectedModels} />
+        <Scene modelPaths={selectedModels} texturePath={selectedTexture} />
       )}
       
       {!loading && selectedModels.length === 0 && (

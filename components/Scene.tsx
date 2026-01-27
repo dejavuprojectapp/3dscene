@@ -2,8 +2,54 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+// 🎨 Shaders de alta qualidade para PLY/SPLAT - Opacity previsível + cor fiel + densidade preservada
+const plyVertexShader = `
+varying vec3 vColor;
+uniform float uPointSize;
+
+void main() {
+  vColor = color.rgb;
+
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+
+  // Tamanho controlável via uniform
+  gl_PointSize = uPointSize;
+}
+`;
+
+const plyFragmentShader = `
+precision highp float;
+
+uniform float uOpacity;
+uniform float uBrightness;
+varying vec3 vColor;
+
+// Conversão sRGB → Linear (padrão real de engine)
+vec3 srgbToLinear(vec3 c) {
+  return mix(
+    c / 12.92,
+    pow((c + 0.055) / 1.055, vec3(2.4)),
+    step(0.04045, c)
+  );
+}
+
+void main() {
+  vec3 color = srgbToLinear(vColor);
+  
+  // Aplica brilho (brightness multiplier)
+  color *= uBrightness;
+
+  // Opacity global previsível
+  float alpha = uOpacity;
+
+  // ⚠️ Para PLY RGB puro, NÃO descartamos fragmentos (preserva densidade)
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
 interface SceneProps {
   modelPaths: string[];
+  texturePath?: string | null;
 }
 
 interface DebugInfo {
@@ -29,13 +75,17 @@ interface DebugInfo {
   }>;
 }
 
-export default function Scene({ modelPaths }: SceneProps) {
+export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [useARCamera, setUseARCamera] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
-  const [objectsLoaded, setObjectsLoaded] = useState(false); // Estado de carregamento dos objetos
+  const [bgTextureEnabled, setBgTextureEnabled] = useState(false); // Controla se a textura de fundo está ativa
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sceneRef = useRef<any>(null); // Ref para a cena Three.js
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bgTextureRef = useRef<any>(null); // Ref para a textura de fundo carregada
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sceneObjectsRef = useRef<Array<{ name: string; object: any; targetPosition: { x: number; y: number; z: number }; opacity: number; visible: boolean }>>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,6 +128,12 @@ export default function Scene({ modelPaths }: SceneProps) {
   }>>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const activeCameraRef = useRef<any>(null); // Ref para a câmera ativa
+  const [isAnimating, setIsAnimating] = useState(false);
+  const animationFrameRef = useRef<number | null>(null);
+  const animationProgressRef = useRef(0);
+  const animationDurationRef = useRef(5000); // Duração total da animação em ms
+  const [animatingObjects, setAnimatingObjects] = useState<Set<string>>(new Set());
+  const objectAnimationFramesRef = useRef<Map<string, number>>(new Map());
 
   // Função para atualizar a posição de um objeto com smooth transition
   const updateObjectPosition = (objectName: string, axis: 'x' | 'y' | 'z', value: number) => {
@@ -90,12 +146,72 @@ export default function Scene({ modelPaths }: SceneProps) {
     }
   };
 
+  // Função helper para aplicar opacity baseada no tipo de arquivo
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const applyObjectOpacity = (object: any, objectName: string, opacity: number) => {
+    const fileExt = objectName.toLowerCase().split('.').pop();
+    const isPlyOrSplat = fileExt === 'ply' || fileExt === 'splat';
+    
+    if (isPlyOrSplat) {
+      // 💎 PLY/SPLAT: Aplica no uniform uOpacity do ShaderMaterial
+      if (object.material && object.material.uniforms && object.material.uniforms.uOpacity) {
+        object.material.uniforms.uOpacity.value = opacity;
+      }
+    } else {
+      // 📦 GLB: Aplica no material padrão (lógica original)
+      if (object.material) {
+        if (Array.isArray(object.material)) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          object.material.forEach((mat: any) => {
+            mat.opacity = opacity;
+            mat.transparent = opacity < 1;
+          });
+        } else {
+          object.material.opacity = opacity;
+          object.material.transparent = opacity < 1;
+        }
+      }
+      // Para GLB com children
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      object.traverse((child: any) => {
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            child.material.forEach((mat: any) => {
+              mat.opacity = opacity;
+              mat.transparent = opacity < 1;
+            });
+          } else {
+            child.material.opacity = opacity;
+            child.material.transparent = opacity < 1;
+          }
+        }
+      });
+    }
+  };
+
   // Função para atualizar a opacidade de um objeto
+  // 🎛 Roteamento correto: .ply/.splat → uOpacity uniform | .glb → material.opacity padrão
   const updateObjectOpacity = (objectName: string, opacity: number) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
     if (objData) {
       objData.opacity = Math.max(0, Math.min(1, opacity)); // Clamp entre 0 e 1
-      console.log(`🎨 Opacity: ${objectName} = ${objData.opacity}`);
+      
+      // Detecta tipo de arquivo
+      const fileExt = objectName.toLowerCase().split('.').pop();
+      const isPlyOrSplat = fileExt === 'ply' || fileExt === 'splat';
+      
+      if (isPlyOrSplat) {
+        // 💎 PLY/SPLAT: Controla uOpacity uniform no ShaderMaterial
+        const material = objData.object.material;
+        if (material && material.uniforms && material.uniforms.uOpacity) {
+          material.uniforms.uOpacity.value = objData.opacity;
+          console.log(`🎨 PLY/SPLAT Opacity: ${objectName} = ${objData.opacity} (uniform)`);
+        }
+      } else {
+        // 📦 GLB: Mantém lógica atual (material padrão)
+        console.log(`🎨 GLB Opacity: ${objectName} = ${objData.opacity}`);
+      }
     } else {
       console.error(`❌ Objeto não encontrado: ${objectName}`);
     }
@@ -110,6 +226,132 @@ export default function Scene({ modelPaths }: SceneProps) {
     } else {
       console.error(`❌ Objeto não encontrado: ${objectName}`);
     }
+  };
+
+  // Função para atualizar o brilho de gaussian splats (.ply/.splat)
+  const updateObjectBrightness = (objectName: string, brightness: number) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (objData) {
+      const fileExt = objectName.toLowerCase().split('.').pop();
+      const isPlyOrSplat = fileExt === 'ply' || fileExt === 'splat';
+      
+      if (isPlyOrSplat) {
+        const material = objData.object.material;
+        if (material && material.uniforms && material.uniforms.uBrightness) {
+          material.uniforms.uBrightness.value = Math.max(0, brightness); // Clamp mínimo 0
+          console.log(`💡 Brilho: ${objectName} = ${brightness.toFixed(2)}x`);
+        }
+      } else {
+        console.warn(`⚠️ Brilho só funciona com .ply/.splat: ${objectName}`);
+      }
+    } else {
+      console.error(`❌ Objeto não encontrado: ${objectName}`);
+    }
+  };
+
+  // Função para atualizar o tamanho dos pontos de gaussian splats (.ply/.splat)
+  const updateObjectPointSize = (objectName: string, pointSize: number) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (objData) {
+      const fileExt = objectName.toLowerCase().split('.').pop();
+      const isPlyOrSplat = fileExt === 'ply' || fileExt === 'splat';
+      
+      if (isPlyOrSplat) {
+        const material = objData.object.material;
+        if (material && material.uniforms && material.uniforms.uPointSize) {
+          material.uniforms.uPointSize.value = Math.max(0.1, pointSize); // Clamp mínimo 0.1
+          console.log(`📏 Tamanho de Ponto: ${objectName} = ${pointSize.toFixed(1)}px`);
+        }
+      } else {
+        console.warn(`⚠️ Tamanho de ponto só funciona com .ply/.splat: ${objectName}`);
+      }
+    } else {
+      console.error(`❌ Objeto não encontrado: ${objectName}`);
+    }
+  };
+
+  // Função para toggle background texture
+  const toggleBackgroundTexture = (enabled: boolean) => {
+    if (!sceneRef.current) {
+      console.error('❌ Cena não disponível');
+      return;
+    }
+
+    if (enabled && bgTextureRef.current) {
+      sceneRef.current.background = bgTextureRef.current;
+      sceneRef.current.environment = bgTextureRef.current;
+      setBgTextureEnabled(true);
+      console.log('🖼️ Background texture ativada');
+    } else {
+      sceneRef.current.background = null;
+      sceneRef.current.environment = null;
+      setBgTextureEnabled(false);
+      console.log('🔲 Background texture desativada (transparente)');
+    }
+  };
+
+  // Função para animar opacity de 0 até o valor configurado
+  const playOpacityAnimation = (objectName: string) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (!objData) {
+      console.error(`❌ Objeto não encontrado: ${objectName}`);
+      return;
+    }
+
+    // Cancela animação anterior deste objeto se existir
+    const existingAnimFrame = objectAnimationFramesRef.current.get(objectName);
+    if (existingAnimFrame) {
+      cancelAnimationFrame(existingAnimFrame);
+    }
+
+    // Marca objeto como animando
+    setAnimatingObjects(prev => new Set(prev).add(objectName));
+
+    const targetOpacity = objData.opacity; // Valor configurado no slider
+    const duration = 1500; // 1.5 segundos de animação
+    const startTime = Date.now();
+
+    console.log(`▶️ Iniciando animação de opacity: ${objectName} (0 → ${targetOpacity.toFixed(2)})`);
+
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      // Interpolação linear de 0 até targetOpacity
+      const currentOpacity = progress * targetOpacity;
+
+      // Aplica opacity atual
+      const fileExt = objectName.toLowerCase().split('.').pop();
+      const isPlyOrSplat = fileExt === 'ply' || fileExt === 'splat';
+      
+      if (isPlyOrSplat) {
+        // PLY/SPLAT: Aplica no uniform
+        const material = objData.object.material;
+        if (material && material.uniforms && material.uniforms.uOpacity) {
+          material.uniforms.uOpacity.value = currentOpacity;
+        }
+      } else {
+        // GLB: Aplica no material padrão
+        applyObjectOpacity(objData.object, objectName, currentOpacity);
+      }
+
+      if (progress < 1) {
+        // Continua animação
+        const frameId = requestAnimationFrame(animate);
+        objectAnimationFramesRef.current.set(objectName, frameId);
+      } else {
+        // Animação completa
+        console.log(`✅ Animação completa: ${objectName}`);
+        objectAnimationFramesRef.current.delete(objectName);
+        setAnimatingObjects(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(objectName);
+          return newSet;
+        });
+      }
+    };
+
+    animate();
   };
 
   // Função para atualizar a rotação de um objeto
@@ -137,7 +379,6 @@ export default function Scene({ modelPaths }: SceneProps) {
     }
 
     const camera = activeCameraRef.current;
-    const direction = camera.position.clone();
     
     const newCamera = {
       id: Date.now(),
@@ -186,38 +427,109 @@ export default function Scene({ modelPaths }: SceneProps) {
     console.log('🗑️ Câmera deletada:', id);
   };
 
-  // Função para limpar e recarregar a cena
-  const reloadScene = () => {
-    console.log('🔄 Recarregando cena...');
-    
-    // Executa todas as funções de cleanup
-    cleanupFunctionsRef.current.forEach((fn, index) => {
-      try {
-        fn();
-        console.log(`  ✅ Cleanup function ${index + 1} executada`);
-      } catch (error) {
-        console.error(`  ❌ Erro no cleanup function ${index + 1}:`, error);
-      }
-    });
-    
-    // Limpa o array de cleanup functions
-    cleanupFunctionsRef.current = [];
-    
-    // Para câmera AR se estiver ativa
-    if (useARCamera) {
-      stopARCamera();
+  // Função para criar e iniciar animação interpolada entre câmeras
+  const createCameraAnimation = () => {
+    if (savedCameras.length < 2) {
+      console.warn('⚠️ Precisa de pelo menos 2 câmeras salvas para criar animação');
+      return;
     }
-    
-    // Limpa referências
-    sceneObjectsRef.current = [];
-    cameraARRef.current = null;
-    
-    // Reset flags
-    sceneInitialized.current = false;
-    setObjectsLoaded(false);
-    
-    console.log('✅ Cena limpa. Pronta para recarregar.');
+
+    console.log('🎬 Criando animação com', savedCameras.length, 'câmeras');
+    setIsAnimating(true);
+    animationProgressRef.current = 0;
   };
+
+  // Função para parar animação
+  const stopCameraAnimation = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    setIsAnimating(false);
+    animationProgressRef.current = 0;
+    console.log('⏸️ Animação parada');
+  };
+
+  // Função de interpolação linear (lerp)
+  const lerp = (start: number, end: number, t: number) => {
+    return start + (end - start) * t;
+  };
+
+  // Função de interpolação esférica para rotações (slerp simplificado)
+  const lerpRotation = (start: number, end: number, t: number) => {
+    // Normaliza ângulos para -180 a 180
+    const normalize = (angle: number) => {
+      while (angle > 180) angle -= 360;
+      while (angle < -180) angle += 360;
+      return angle;
+    };
+    
+    const s = normalize(start);
+    const e = normalize(end);
+    let diff = e - s;
+    
+    // Pega o caminho mais curto
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    
+    return normalize(s + diff * t);
+  };
+
+  // useEffect para animar câmera
+  useEffect(() => {
+    if (!isAnimating || savedCameras.length < 2 || !activeCameraRef.current) {
+      return;
+    }
+
+    const startTime = Date.now();
+    const duration = animationDurationRef.current;
+    
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      animationProgressRef.current = progress;
+
+      // Calcula qual segmento da animação (entre quais câmeras)
+      const totalSegments = savedCameras.length - 1;
+      const segmentProgress = progress * totalSegments;
+      const currentSegment = Math.min(Math.floor(segmentProgress), totalSegments - 1);
+      const segmentT = segmentProgress - currentSegment;
+
+      const startCam = savedCameras[currentSegment];
+      const endCam = savedCameras[currentSegment + 1];
+
+      // Interpola posição
+      const camera = activeCameraRef.current;
+      camera.position.x = lerp(startCam.position.x, endCam.position.x, segmentT);
+      camera.position.y = lerp(startCam.position.y, endCam.position.y, segmentT);
+      camera.position.z = lerp(startCam.position.z, endCam.position.z, segmentT);
+
+      // Interpola rotação
+      const rotX = lerpRotation(startCam.rotation.x, endCam.rotation.x, segmentT);
+      const rotY = lerpRotation(startCam.rotation.y, endCam.rotation.y, segmentT);
+      const rotZ = lerpRotation(startCam.rotation.z, endCam.rotation.z, segmentT);
+      
+      camera.rotation.x = rotX * (Math.PI / 180);
+      camera.rotation.y = rotY * (Math.PI / 180);
+      camera.rotation.z = rotZ * (Math.PI / 180);
+
+      if (progress < 1) {
+        animationFrameRef.current = requestAnimationFrame(animate);
+      } else {
+        console.log('✅ Animação completa');
+        setIsAnimating(false);
+        animationProgressRef.current = 0;
+      }
+    };
+
+    animate();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [isAnimating, savedCameras]);
 
   // Inicializa webcam/câmera traseira
   const startARCamera = async () => {
@@ -494,6 +806,7 @@ export default function Scene({ modelPaths }: SceneProps) {
     const uniqueObjects = new Map();
     const duplicates: string[] = [];
     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sceneObjectsRef.current.forEach((item) => {
       if (uniqueObjects.has(item.name)) {
         duplicates.push(item.name);
@@ -502,6 +815,7 @@ export default function Scene({ modelPaths }: SceneProps) {
           if (item.object.geometry) item.object.geometry.dispose();
           if (item.object.material) {
             if (Array.isArray(item.object.material)) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               item.object.material.forEach((mat: any) => mat.dispose());
             } else {
               item.object.material.dispose();
@@ -549,9 +863,6 @@ export default function Scene({ modelPaths }: SceneProps) {
     console.log('✅ Flag sceneInitialized definida como true');
     console.log('✅ Flag sceneHasStartedOnce definida como true - cena não reiniciará');
     
-    // Reset estado de carregamento
-    setObjectsLoaded(false);
-
     // Limpa array anterior de cleanup functions
     cleanupFunctionsRef.current = [];
 
@@ -614,7 +925,46 @@ export default function Scene({ modelPaths }: SceneProps) {
         const scene = new THREE.Scene();
         // Background transparente quando AR está ativo, preto quando não está
         scene.background = null; // Sempre transparente para ver o vídeo
+        sceneRef.current = scene; // Armazena referência da cena
         console.log('🎬 Nova cena criada | Objetos na cena:', scene.children.length);
+
+        // 🖼️ Carrega textura de fundo se fornecida
+        if (texturePath) {
+          const fileExt = texturePath.toLowerCase().split('.').pop();
+          
+          if (fileExt === 'hdr') {
+            // HDR: usa RGBELoader para equirectangular HDR
+            const { RGBELoader } = await import('three/examples/jsm/loaders/RGBELoader.js');
+            const rgbeLoader = new RGBELoader();
+            rgbeLoader.load(
+              texturePath,
+              (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                bgTextureRef.current = texture;
+                console.log('✅ Textura HDR carregada:', texturePath);
+              },
+              undefined,
+              (error) => {
+                console.error('❌ Erro ao carregar HDR:', error);
+              }
+            );
+          } else if (fileExt === 'png' || fileExt === 'jpg' || fileExt === 'jpeg') {
+            // PNG/JPG: usa TextureLoader padrão
+            const textureLoader = new THREE.TextureLoader();
+            textureLoader.load(
+              texturePath,
+              (texture) => {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                bgTextureRef.current = texture;
+                console.log('✅ Textura carregada:', texturePath);
+              },
+              undefined,
+              (error) => {
+                console.error('❌ Erro ao carregar textura:', error);
+              }
+            );
+          }
+        }
 
         const camera = new THREE.PerspectiveCamera(
           75,
@@ -738,11 +1088,26 @@ export default function Scene({ modelPaths }: SceneProps) {
               plyFile,
               (geometry) => {
                 geometry.computeVertexNormals();
+                
+                // 🔒 OBRIGATÓRIO: Normalização de cor para PLY/SPLAT (0-255 → 0-1)
+                if (geometry.attributes.color) {
+                  geometry.attributes.color.normalized = true;
+                  console.log('✅ PLY: Color attribute normalized');
+                }
 
-                const material = new THREE.PointsMaterial({
-                  size: 0.015,
+                // 💎 ShaderMaterial de ALTA QUALIDADE para PLY/SPLAT
+                const material = new THREE.ShaderMaterial({
+                  transparent: true,
+                  depthWrite: false,
+                  depthTest: true,
                   vertexColors: true,
-                  sizeAttenuation: true,
+                  uniforms: {
+                    uOpacity: { value: 1.0 },
+                    uBrightness: { value: 1.0 }, // Brilho padrão = 1.0 (sem alteração)
+                    uPointSize: { value: 2.0 } // Tamanho de ponto padrão = 2.0
+                  },
+                  vertexShader: plyVertexShader,
+                  fragmentShader: plyFragmentShader
                 });
 
                 const points = new THREE.Points(geometry, material);
@@ -797,12 +1162,10 @@ export default function Scene({ modelPaths }: SceneProps) {
           .then(() => {
             console.log('✅ TODOS OS MODELOS CARREGADOS! Iniciando animação...');
             console.log('📊 Total de objetos carregados:', sceneObjectsRef.current.length);
-            setObjectsLoaded(true); // Marca objetos como carregados
             startAnimation();
           })
           .catch((error) => {
             console.error('❌ Erro ao carregar modelos:', error);
-            setObjectsLoaded(false); // Marca como falha no carregamento
             // Mesmo com erro, tenta iniciar animação com o que foi carregado
             startAnimation();
           });
@@ -818,7 +1181,7 @@ export default function Scene({ modelPaths }: SceneProps) {
           
           //  Fake 4DOF: Aplica movimento baseado em device orientation + motion
           if (useARCamera && isInitialOrientationSet.current) {
-            sceneObjectsRef.current.forEach(({ object, targetPosition, opacity, visible }) => {
+            sceneObjectsRef.current.forEach(({ name, object, targetPosition, opacity, visible }) => {
               // Calcula diferença de orientação desde a posição inicial
               const deltaAlpha = (deviceOrientationRef.current.alpha - initialOrientationRef.current.alpha) * (Math.PI / 180);
               const deltaBeta = (deviceOrientationRef.current.beta - initialOrientationRef.current.beta) * (Math.PI / 180);
@@ -841,69 +1204,21 @@ export default function Scene({ modelPaths }: SceneProps) {
               object.position.y += (posY - object.position.y) * lerpFactor;
               object.position.z += (targetPosition.z - object.position.z) * lerpFactor;
               
-              // Aplica opacity e visibility
+              // Aplica opacity e visibility com roteamento correto
               object.visible = visible;
-              if (object.material) {
-                if (Array.isArray(object.material)) {
-                  object.material.forEach((mat: any) => {
-                    mat.opacity = opacity;
-                    mat.transparent = opacity < 1;
-                  });
-                } else {
-                  object.material.opacity = opacity;
-                  object.material.transparent = opacity < 1;
-                }
-              }
-              // Para GLB com children
-              object.traverse((child: any) => {
-                if (child.material) {
-                  if (Array.isArray(child.material)) {
-                    child.material.forEach((mat: any) => {
-                      mat.opacity = opacity;
-                      mat.transparent = opacity < 1;
-                    });
-                  } else {
-                    child.material.opacity = opacity;
-                    child.material.transparent = opacity < 1;
-                  }
-                }
-              });
+              applyObjectOpacity(object, name, opacity);
             });
           } else {
             // Modo normal: apenas lerp para targetPosition
-            sceneObjectsRef.current.forEach(({ object, targetPosition, opacity, visible }) => {
+            sceneObjectsRef.current.forEach(({ name, object, targetPosition, opacity, visible }) => {
               const lerpFactor = 0.1;
               object.position.x += (targetPosition.x - object.position.x) * lerpFactor;
               object.position.y += (targetPosition.y - object.position.y) * lerpFactor;
               object.position.z += (targetPosition.z - object.position.z) * lerpFactor;
               
-              // Aplica opacity e visibility
+              // Aplica opacity e visibility com roteamento correto
               object.visible = visible;
-              if (object.material) {
-                if (Array.isArray(object.material)) {
-                  object.material.forEach((mat: any) => {
-                    mat.opacity = opacity;
-                    mat.transparent = opacity < 1;
-                  });
-                } else {
-                  object.material.opacity = opacity;
-                  object.material.transparent = opacity < 1;
-                }
-              }
-              // Para GLB com children
-              object.traverse((child: any) => {
-                if (child.material) {
-                  if (Array.isArray(child.material)) {
-                    child.material.forEach((mat: any) => {
-                      mat.opacity = opacity;
-                      mat.transparent = opacity < 1;
-                    });
-                  } else {
-                    child.material.opacity = opacity;
-                    child.material.transparent = opacity < 1;
-                  }
-                }
-              });
+              applyObjectOpacity(object, name, opacity);
             });
           }
 
@@ -1052,6 +1367,7 @@ export default function Scene({ modelPaths }: SceneProps) {
             // Limpa material(is)
             if (object.material) {
               if (Array.isArray(object.material)) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 object.material.forEach((mat: any) => {
                   // Limpa texturas
                   if (mat.map) mat.map.dispose();
@@ -1067,12 +1383,14 @@ export default function Scene({ modelPaths }: SceneProps) {
             
             // Limpa children recursivamente (para GLB)
             if (object.children && object.children.length > 0) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               object.traverse((child: any) => {
                 if (child.geometry) {
                   child.geometry.dispose();
                 }
                 if (child.material) {
                   if (Array.isArray(child.material)) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     child.material.forEach((mat: any) => {
                       if (mat.map) mat.map.dispose();
                       mat.dispose();
@@ -1088,7 +1406,9 @@ export default function Scene({ modelPaths }: SceneProps) {
           
           // 5. Limpa TODOS os objetos restantes da cena (cache)
           console.log('🧹 Limpando cache da scene...');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const objectsToRemove: any[] = [];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           scene.traverse((object) => {
             if (object !== scene) {
               objectsToRemove.push(object);
@@ -1099,6 +1419,7 @@ export default function Scene({ modelPaths }: SceneProps) {
                 }
                 if (object.material) {
                   if (Array.isArray(object.material)) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     object.material.forEach((mat: any) => {
                       if (mat.map) mat.map.dispose();
                       mat.dispose();
@@ -1150,7 +1471,6 @@ export default function Scene({ modelPaths }: SceneProps) {
       stopARCamera(); // Cleanup camera stream
       sceneObjectsRef.current = []; // Limpa referências de objetos
       sceneInitialized.current = false; // Reset flag para permitir nova inicialização
-      setObjectsLoaded(false); // Reset estado de carregamento
       console.log('✅ Cleanup completo: cena e objetos removidos, flag resetada');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1333,10 +1653,88 @@ export default function Scene({ modelPaths }: SceneProps) {
           </button>
         </div>
 
+        {/* Background Texture Control */}
+        {texturePath && (
+          <div className="mb-3 border-b border-white/20 pb-2">
+            <p className="font-semibold text-purple-300 mb-2">🖼️ Background Texture:</p>
+            <p className="text-[10px] text-gray-400 mb-2">
+              {texturePath.split('/').pop()}
+            </p>
+            <button
+              onClick={() => toggleBackgroundTexture(!bgTextureEnabled)}
+              disabled={!bgTextureRef.current}
+              className={`w-full py-1 px-2 rounded text-[9px] font-semibold ${
+                !bgTextureRef.current
+                  ? 'bg-gray-500 cursor-not-allowed'
+                  : bgTextureEnabled
+                  ? 'bg-orange-500 hover:bg-orange-600'
+                  : 'bg-blue-500 hover:bg-blue-600'
+              }`}
+            >
+              {!bgTextureRef.current ? '⏳ Carregando...' : bgTextureEnabled ? '🔲 Desativar (Transparente)' : '🖼️ Ativar Equirectangular'}
+            </button>
+            {bgTextureEnabled && (
+              <p className="text-[9px] text-green-400 mt-1">✓ Ativa (Background + Environment)</p>
+            )}
+          </div>
+        )}
+
         {/* Saved Cameras */}
         {savedCameras.length > 0 && (
           <div className="mb-3 border-b border-white/20 pb-2">
             <p className="font-semibold text-green-300 mb-2">📷 Câmeras Salvas:</p>
+            
+            {/* Botões de controle de animação */}
+            {savedCameras.length >= 2 && (
+              <div className="mb-2 flex gap-1">
+                <button
+                  onClick={createCameraAnimation}
+                  disabled={isAnimating}
+                  className={`flex-1 py-1 px-2 rounded text-[9px] font-semibold ${
+                    isAnimating 
+                      ? 'bg-gray-500 cursor-not-allowed' 
+                      : 'bg-orange-500 hover:bg-orange-600'
+                  }`}
+                >
+                  🎬 Criar Animação
+                </button>
+                {isAnimating ? (
+                  <button
+                    onClick={stopCameraAnimation}
+                    className="flex-1 py-1 px-2 bg-red-500 hover:bg-red-600 rounded text-[9px] font-semibold"
+                  >
+                    ⏹️ Parar
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (savedCameras.length >= 2) {
+                        createCameraAnimation();
+                      }
+                    }}
+                    disabled={savedCameras.length < 2}
+                    className={`flex-1 py-1 px-2 rounded text-[9px] font-semibold ${
+                      savedCameras.length < 2
+                        ? 'bg-gray-500 cursor-not-allowed'
+                        : 'bg-green-500 hover:bg-green-600'
+                    }`}
+                  >
+                    ▶️ Play
+                  </button>
+                )}
+              </div>
+            )}
+            
+            {/* Progress bar durante animação */}
+            {isAnimating && (
+              <div className="mb-2 bg-white/10 rounded-full h-2 overflow-hidden">
+                <div 
+                  className="bg-green-500 h-full transition-all duration-100"
+                  style={{ width: `${animationProgressRef.current * 100}%` }}
+                ></div>
+              </div>
+            )}
+            
             {savedCameras.map((cam) => (
               <div key={cam.id} className="mb-2 p-2 bg-white/5 rounded border border-green-500/30">
                 <div className="flex items-center justify-between mb-1">
@@ -1386,12 +1784,28 @@ export default function Scene({ modelPaths }: SceneProps) {
           ) : (
             <>
               {/* GLB Models */}
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
               {debugInfo.objects.filter((obj: any) => obj.name.toLowerCase().endsWith('.glb')).length > 0 && (
                 <div className="mb-3">
                   <p className="font-semibold text-green-300 mb-1 text-[10px]">📦 GLB Models:</p>
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {debugInfo.objects.filter((obj: any) => obj.name.toLowerCase().endsWith('.glb')).map((obj, idx) => (
                     <div key={`${obj.name}-${idx}`} className="mb-3 pl-2 border-l-2 border-green-500/50">
-                      <p className="text-[10px] font-semibold text-green-200">{obj.name}</p>
+                      <div className="flex items-center gap-2 mb-2">
+                        <p className="text-[10px] font-semibold text-green-200 flex-1">{obj.name}</p>
+                        <button
+                          onClick={() => playOpacityAnimation(obj.name)}
+                          disabled={animatingObjects.has(obj.name)}
+                          className={`px-2 py-1 rounded text-[9px] font-semibold ${
+                            animatingObjects.has(obj.name)
+                              ? 'bg-gray-500 cursor-not-allowed'
+                              : 'bg-blue-500 hover:bg-blue-600'
+                          }`}
+                          title="Animar Opacity (0 → valor configurado)"
+                        >
+                          {animatingObjects.has(obj.name) ? '⏸️' : '▶️'}
+                        </button>
+                      </div>
                       
                       {/* Controles de Visibilidade e Opacity */}
                       <div className="mt-2 mb-2 space-y-1">
@@ -1501,12 +1915,28 @@ export default function Scene({ modelPaths }: SceneProps) {
               )}
               
               {/* PLY Models */}
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
               {debugInfo.objects.filter((obj: any) => obj.name.toLowerCase().endsWith('.ply')).length > 0 && (
                 <div className="mb-3">
                   <p className="font-semibold text-yellow-300 mb-1 text-[10px]">☁️ PLY Models:</p>
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {debugInfo.objects.filter((obj: any) => obj.name.toLowerCase().endsWith('.ply')).map((obj, idx) => (
               <div key={`${obj.name}-${idx}`} className="mb-3 pl-2 border-l-2 border-blue-500/30">
-                <p className="text-[10px] font-semibold text-white/90">{obj.name}</p>
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-[10px] font-semibold text-white/90 flex-1">{obj.name}</p>
+                  <button
+                    onClick={() => playOpacityAnimation(obj.name)}
+                    disabled={animatingObjects.has(obj.name)}
+                    className={`px-2 py-1 rounded text-[9px] font-semibold ${
+                      animatingObjects.has(obj.name)
+                        ? 'bg-gray-500 cursor-not-allowed'
+                        : 'bg-blue-500 hover:bg-blue-600'
+                    }`}
+                    title="Animar Opacity (0 → valor configurado)"
+                  >
+                    {animatingObjects.has(obj.name) ? '⏸️' : '▶️'}
+                  </button>
+                </div>
                 
                 {/* Controles de Visibilidade e Opacity */}
                 <div className="mt-2 mb-2 space-y-1">
@@ -1540,6 +1970,42 @@ export default function Scene({ modelPaths }: SceneProps) {
                       className="flex-1 h-1"
                     />
                     <span className="text-[9px] text-white/60 w-8">100%</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-yellow-300 w-16">💡 Brilho:</span>
+                    <input 
+                      type="range"
+                      min="0"
+                      max="10"
+                      step="0.1"
+                      defaultValue="1"
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value);
+                        updateObjectBrightness(obj.name, value);
+                        const display = e.target.nextElementSibling;
+                        if (display) display.textContent = `${value.toFixed(1)}x`;
+                      }}
+                      className="flex-1 h-1"
+                    />
+                    <span className="text-[9px] text-white/60 w-8">1.0x</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-blue-300 w-16">📏 Tamanho:</span>
+                    <input 
+                      type="range"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                      defaultValue="2"
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value);
+                        updateObjectPointSize(obj.name, value);
+                        const display = e.target.nextElementSibling;
+                        if (display) display.textContent = `${value.toFixed(1)}px`;
+                      }}
+                      className="flex-1 h-1"
+                    />
+                    <span className="text-[9px] text-white/60 w-8">2.0px</span>
                   </div>
                 </div>
                 

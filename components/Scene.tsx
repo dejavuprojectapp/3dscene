@@ -64,6 +64,7 @@ export default function Scene({ modelPaths }: SceneProps) {
   const deviceMotionRef = useRef({ x: 0, y: 0, z: 0 });
   const initialOrientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
   const isInitialOrientationSet = useRef(false);
+  const sceneInitialized = useRef(false); // Flag para prevenir múltiplas inicializações
 
   // Função para atualizar a posição de um objeto com smooth transition
   const updateObjectPosition = (objectName: string, axis: 'x' | 'y' | 'z', value: number) => {
@@ -314,12 +315,27 @@ export default function Scene({ modelPaths }: SceneProps) {
   useEffect(() => {
     if (!containerRef.current || modelPaths.length === 0) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let viewer: any = null;
+    console.log('🔄 useEffect executado. ModelPaths:', modelPaths);
+    console.log('🚦 sceneInitialized.current:', sceneInitialized.current);
+
+    // Previne múltiplas inicializações simultâneas
+    if (sceneInitialized.current) {
+      console.warn('⚠️ AVISO: Tentativa de inicializar cena duplicada bloqueada!');
+      return;
+    }
+    
+    sceneInitialized.current = true;
+    console.log('✅ Flag sceneInitialized definida como true');
+
     const cleanupFunctions: (() => void)[] = [];
 
     const init = async () => {
       if (!containerRef.current) return;
+
+      // Limpa objetos anteriores para evitar duplicação
+      sceneObjectsRef.current = [];
+      console.log('🧹 SceneObjectsRef limpo antes de recarregar');
+      console.log('🔍 Estado inicial - useEffect disparado para:', modelPaths);
 
       console.log('🚀 Iniciando carregamento de modelos:', modelPaths);
 
@@ -337,54 +353,7 @@ export default function Scene({ modelPaths }: SceneProps) {
         console.info('   → Ou renomeie para .ply se for um Point Cloud');
       }
 
-      // Check for .splat files (gaussian-splats-3d only supports .splat and .ply)
-      const splatFile = modelPaths.find(path => {
-        const ext = path.split('.').pop()?.toLowerCase();
-        return ext === 'splat';
-      });
-
-      if (splatFile) {
-        console.log('📦 Carregando Gaussian Splatting:', splatFile);
-        
-        try {
-          const GaussianSplats3D = await import('gaussian-splats-3d');
-          
-          console.log('✓ Biblioteca gaussian-splats-3d carregada');
-          console.log('Conteúdo da biblioteca:', Object.keys(GaussianSplats3D));
-
-          viewer = new GaussianSplats3D.Viewer({
-            cameraUp: [0, 0, 1],
-            initialCameraPosition: [0, 0, 5],
-            initialCameraLookAt: [0, 0, 0],
-            rootElement: containerRef.current,
-          });
-
-          console.log('✓ Viewer criado');
-
-          // Initialize and load the splat file
-          await viewer.init();
-          console.log('✓ Viewer inicializado');
-
-          // Load the scene using the correct method
-          await viewer.loadFile(splatFile, {
-            progressiveLoad: true,
-          });
-          
-          console.log('✅ Gaussian Splatting carregado com sucesso!');
-
-          cleanupFunctions.push(() => {
-            if (viewer) {
-              viewer.dispose();
-            }
-          });
-
-        } catch (error) {
-          console.error('❌ Erro ao inicializar Gaussian Splatting:', error);
-          console.error('Stack:', error);
-        }
-      }
-
-      // Handle PLY files
+      // Handle PLY files (gaussian-splats-3d.Viewer removido para evitar duplicação)
       const plyFiles = modelPaths.filter(path => {
         const ext = path.split('.').pop()?.toLowerCase();
         return ext === 'ply';
@@ -401,6 +370,7 @@ export default function Scene({ modelPaths }: SceneProps) {
         const scene = new THREE.Scene();
         // Background transparente quando AR está ativo, preto quando não está
         scene.background = null; // Sempre transparente para ver o vídeo
+        console.log('🎬 Nova cena criada | Objetos na cena:', scene.children.length);
 
         const camera = new THREE.PerspectiveCamera(
           75,
@@ -446,6 +416,7 @@ export default function Scene({ modelPaths }: SceneProps) {
         const pointLight = new THREE.PointLight(0xffffff, 1);
         pointLight.position.set(10, 10, 10);
         scene.add(pointLight);
+        console.log('💡 Luzes adicionadas | Total objetos na cena:', scene.children.length);
 
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
@@ -463,52 +434,34 @@ export default function Scene({ modelPaths }: SceneProps) {
         gltfLoader.load(
           '/models/obj.glb',
           (gltf) => {
+            // Verifica se já existe um objeto com esse nome na cena
+            if (scene.getObjectByName('obj.glb')) {
+              console.warn('⚠️ DUPLICAÇÃO BLOQUEADA: obj.glb já existe na cena!');
+              return;
+            }
+            
             const model = gltf.scene;
-            
-            // Calcula bounding box para auto-escala
-            const box = new THREE.Box3().setFromObject(model);
-            const size = box.getSize(new THREE.Vector3());
-            const center = box.getCenter(new THREE.Vector3());
-            
-            console.log('📦 GLB Bounding Box:', { size, center });
-            
-            // Centraliza o modelo
-            model.position.set(-center.x, -center.y, -center.z);
-            
-            // Auto-escala para caber em uma caixa de tamanho 2
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 2 / maxDim;
-            model.scale.set(scale, scale, scale);
-            
-            console.log('📏 Escala aplicada:', scale);
-            
-            // Wrapper para manter posição editável
-            const wrapper = new THREE.Group();
-            wrapper.add(model);
-            wrapper.position.set(0, 0, 0); // Nasce na origem
-            wrapper.name = 'obj.glb';
-            scene.add(wrapper);
-            
-            console.log('✅ Modelo GLB carregado e centralizado: obj.glb');
+            model.position.set(0, 0, 0); // Nasce na origem
+            model.name = 'obj.glb';
+            console.log('➕ Adicionando GLB à cena:', 'obj.glb', '| Total objetos na cena:', scene.children.length);
+            scene.add(model);
+            console.log('✅ GLB adicionado | Total objetos na cena:', scene.children.length);
             
             sceneObjectsRef.current.push({
               name: 'obj.glb',
-              object: wrapper,
+              object: model,
               targetPosition: { x: 0, y: 0, z: 0 }
             });
-            console.log('📋 SceneObjectsRef atualizado:', sceneObjectsRef.current.map(o => o.name));
           },
-          (progress) => {
-            const percent = (progress.loaded / progress.total) * 100;
-            console.log(`⏳ Carregando obj.glb: ${percent.toFixed(0)}%`);
-          },
+          undefined,
           (error) => {
             console.error('❌ Erro ao carregar obj.glb:', error);
           }
         );
-        console.log('📋 SceneObjectsRef inicializado:', sceneObjectsRef.current.map(o => o.name));
 
+        console.log('📋 Iniciando forEach para PLYs. Total de arquivos:', plyFiles.length, plyFiles);
         plyFiles.forEach((plyFile, index) => {
+          console.log(`🔄 forEach iteração ${index}: Carregando`, plyFile);
           loader.load(
             plyFile,
             (geometry) => {
@@ -522,6 +475,13 @@ export default function Scene({ modelPaths }: SceneProps) {
 
               const points = new THREE.Points(geometry, material);
               const fileName = plyFile.split('/').pop() || `PLY ${index}`;
+              
+              // Verifica se já existe um objeto com esse nome na cena
+              if (scene.getObjectByName(fileName)) {
+                console.warn('⚠️ DUPLICAÇÃO BLOQUEADA:', fileName, 'já existe na cena!');
+                return;
+              }
+              
               points.name = fileName;
               
               geometry.computeBoundingBox();
@@ -539,10 +499,10 @@ export default function Scene({ modelPaths }: SceneProps) {
                 points.position.set(0, 0, 0); // Nasce na origem
               }
 
+              console.log('➕ Adicionando PLY à cena:', fileName, '| Total objetos na cena antes:', scene.children.length);
               scene.add(points);
+              console.log('✅ PLY adicionado:', fileName, '| Total objetos na cena depois:', scene.children.length);
               sceneObjectsRef.current.push({ name: fileName, object: points, targetPosition: { x: 0, y: 0, z: 0 } });
-              console.log(`✅ PLY carregado: ${plyFile}`);
-              console.log('📋 Objetos no sceneObjectsRef:', sceneObjectsRef.current.map(o => o.name));
             },
             undefined,
             (error) => {
@@ -555,7 +515,7 @@ export default function Scene({ modelPaths }: SceneProps) {
         const animate = () => {
           animationId = requestAnimationFrame(animate);
           
-          // 🎮 Fake 4DOF: Aplica movimento baseado em device orientation + motion
+          //  Fake 4DOF: Aplica movimento baseado em device orientation + motion
           if (useARCamera && isInitialOrientationSet.current) {
             sceneObjectsRef.current.forEach(({ object, targetPosition }) => {
               // Calcula diferença de orientação desde a posição inicial
@@ -681,23 +641,7 @@ export default function Scene({ modelPaths }: SceneProps) {
             objects: objectsInfo,
           };
           
-          // Log em tempo real a cada 60 frames (~1 segundo em 60fps)
-          if (frameCount % 60 === 0) {
-            console.log('📊 DEBUG INFO (Tempo Real):');
-            console.log('📹 Camera:', newDebugInfo.camera);
-            console.log('🔄 Camera Rotation:', newDebugInfo.cameraRotation);
-            console.log('👀 Look At:', newDebugInfo.lookAt);
-            console.log('📐 Viewport:', {
-              resolution: `${newDebugInfo.viewport.width}x${newDebugInfo.viewport.height}`,
-              aspect: newDebugInfo.viewport.aspect,
-              fov: `${newDebugInfo.viewport.fov}°`,
-              frustum: `${newDebugInfo.viewport.frustumWidth}x${newDebugInfo.viewport.frustumHeight}`,
-              distance: newDebugInfo.viewport.distanceToOrigin,
-              visibleArea: newDebugInfo.viewport.visibleArea,
-            });
-            console.log('📦 Objects:', newDebugInfo.objects);
-            console.log('---');
-          }
+          // Debug info atualizado em tempo real no overlay (console logs removidos para evitar duplicação)
           
           // Força atualização sempre criando objeto novo
           setDebugInfo({ ...newDebugInfo });
@@ -717,10 +661,25 @@ export default function Scene({ modelPaths }: SceneProps) {
           if (animationId) cancelAnimationFrame(animationId);
           window.removeEventListener('resize', handleResize);
           controls.dispose();
+          
+          // Limpa todos os objetos da cena
+          scene.traverse((object) => {
+            if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
+              object.geometry?.dispose();
+              if (Array.isArray(object.material)) {
+                object.material.forEach(mat => mat.dispose());
+              } else {
+                object.material?.dispose();
+              }
+            }
+          });
+          scene.clear();
+          
           if (containerRef.current && containerRef.current.contains(renderer.domElement)) {
             containerRef.current.removeChild(renderer.domElement);
           }
           renderer.dispose();
+          console.log('🗑️ Renderer e objetos da cena descartados');
         });
       }
     };
@@ -728,8 +687,12 @@ export default function Scene({ modelPaths }: SceneProps) {
     init();
 
     return () => {
+      console.log('🧹 Iniciando cleanup...');
       cleanupFunctions.forEach(fn => fn());
       stopARCamera(); // Cleanup camera stream
+      sceneObjectsRef.current = []; // Limpa referências de objetos
+      sceneInitialized.current = false; // Reset flag para permitir nova inicialização
+      console.log('✅ Cleanup completo: cena e objetos removidos, flag resetada');
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelPaths]);

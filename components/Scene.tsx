@@ -165,6 +165,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     if (directionalLightRef.current) directionalLightRef.current.intensity = directionalIntensity;
   }, [directionalIntensity]);
 
+  // Log das luzes da cena sempre que a intensidade mudar
+  useEffect(() => {
+    const lightsInfo = [
+      { name: '🟡 AmbientLight', intensity: ambientIntensity },
+      { name: '🟠 PointLight', intensity: pointIntensity },
+      { name: '⚪ DirectionalLight', intensity: directionalIntensity }
+    ];
+    
+    console.group('💡 LUZES DA CENA');
+    console.table(lightsInfo);
+    console.log('Total de luzes:', lightsInfo.length);
+    console.groupEnd();
+  }, [ambientIntensity, pointIntensity, directionalIntensity]);
+
   useEffect(() => {
     sceneObjectsRef.current.forEach(obj => {
       if (obj.object && obj.object.traverse) {
@@ -1144,55 +1158,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
         console.log('💡 Luzes adicionadas (Ambient, Point, Directional) | Total objetos na cena:', scene.children.length);
 
-
-  // (Removido: hooks useEffect devem estar apenas no topo do componente)
-        {/* Light Intensity Controls */}
-        <div className="mb-3 border-b border-white/20 pb-2">
-          <p className="font-semibold text-yellow-300 mb-2">💡 Luzes da Cena:</p>
-          <div className="mb-2">
-            <label className="text-[10px] text-gray-300 mb-1 block">
-              AmbientLight: {ambientIntensity.toFixed(2)}
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="5"
-              step="0.01"
-              value={ambientIntensity}
-              onChange={e => setAmbientIntensity(parseFloat(e.target.value))}
-              className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-            />
-          </div>
-          <div className="mb-2">
-            <label className="text-[10px] text-gray-300 mb-1 block">
-              PointLight: {pointIntensity.toFixed(2)}
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="5"
-              step="0.01"
-              value={pointIntensity}
-              onChange={e => setPointIntensity(parseFloat(e.target.value))}
-              className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-gray-300 mb-1 block">
-              DirectionalLight: {directionalIntensity.toFixed(2)}
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="5"
-              step="0.01"
-              value={directionalIntensity}
-              onChange={e => setDirectionalIntensity(parseFloat(e.target.value))}
-              className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-            />
-          </div>
-        </div>
-
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
@@ -1973,6 +1938,68 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             )}
           </div>
         )}
+
+        {/* Luzes da Cena */}
+        <div className="mb-3 border-b border-white/20 pb-2">
+          <p className="font-semibold text-yellow-300 mb-2">💡 Luzes da Cena:</p>
+          <div className="bg-white/5 rounded p-2 border border-white/10 mb-3">
+            <p className="text-[9px] text-gray-300 font-mono mb-1">📊 Luzes ativas:</p>
+            <div className="space-y-1 text-[9px] text-gray-200 font-mono">
+              <div className="flex justify-between">
+                <span>🟡 AmbientLight</span>
+                <span className="text-yellow-300">{ambientIntensity.toFixed(3)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>🟠 PointLight</span>
+                <span className="text-orange-300">{pointIntensity.toFixed(3)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>⚪ DirectionalLight</span>
+                <span className="text-blue-300">{directionalIntensity.toFixed(3)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Sliders de controle */}
+          <div className="space-y-2">
+            <div>
+              <label className="text-[9px] text-gray-300 mb-1 block">🟡 AmbientLight</label>
+              <input
+                type="range"
+                min="0"
+                max="5"
+                step="0.01"
+                value={ambientIntensity}
+                onChange={e => setAmbientIntensity(parseFloat(e.target.value))}
+                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] text-gray-300 mb-1 block">🟠 PointLight</label>
+              <input
+                type="range"
+                min="0"
+                max="5"
+                step="0.01"
+                value={pointIntensity}
+                onChange={e => setPointIntensity(parseFloat(e.target.value))}
+                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] text-gray-300 mb-1 block">⚪ DirectionalLight</label>
+              <input
+                type="range"
+                min="0"
+                max="5"
+                step="0.01"
+                value={directionalIntensity}
+                onChange={e => setDirectionalIntensity(parseFloat(e.target.value))}
+                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+          </div>
+        </div>
 
         {/* Saved Cameras */}
         {savedCameras.length > 0 && (

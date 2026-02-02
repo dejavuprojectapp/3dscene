@@ -50,6 +50,88 @@ void main() {
 }
 `;
 
+// 🌐 Shader Reflexivo com HDRI Equirectangular
+const equirectangularReflectionVertexShader = `
+  varying vec3 vWorldNormal;
+  varying vec3 vViewDir;
+
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    vViewDir = normalize(cameraPosition - worldPos.xyz);
+
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const equirectangularReflectionFragmentShader = `
+  #define PI 3.141592653589793
+  
+  uniform sampler2D uEnvMap;
+  uniform float uBrightness;
+  uniform float uMetalness;
+  uniform vec3 uMetalColor;
+  uniform float uFresnelPower;
+  uniform float uReflectionStrength;
+  uniform float uUseMetal;
+  
+  varying vec3 vWorldNormal;
+  varying vec3 vViewDir;
+
+  // Direção → UV equiretangular
+  vec2 equirectangularUV(vec3 dir) {
+    dir = normalize(dir);
+    float phi = atan(dir.z, dir.x);
+    float theta = acos(clamp(dir.y, -1.0, 1.0));
+
+    return vec2(
+      phi / (2.0 * PI) + 0.5,
+      1.0 - theta / PI
+    );
+  }
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(vViewDir);
+
+    vec3 R = reflect(-V, N);
+    vec3 envColor = texture2D(uEnvMap, equirectangularUV(R)).rgb;
+
+    // Fresnel (Schlick simplificado)
+    float NdotV = clamp(dot(N, V), 0.0, 1.0);
+    float fresnel = pow(1.0 - NdotV, uFresnelPower);
+
+    vec3 color;
+    
+    if (uUseMetal > 0.5) {
+      // === MODO METAL ===
+      // Dieletric padrão (~4% de reflexão)
+      vec3 dielectricSpec = vec3(0.04);
+
+      // Metal: cor do metal * energia
+      vec3 metalSpec = uMetalColor;
+
+      // Mistura física aproximada
+      vec3 specColor = mix(dielectricSpec, metalSpec, uMetalness);
+
+      // Reflexão final
+      vec3 reflection = envColor * specColor;
+
+      // Fresnel controla intensidade angular
+      color = reflection * mix(0.25, 1.0, fresnel);
+
+      // Brilho global
+      color *= uBrightness;
+    } else {
+      // === MODO REFLEXÃO SIMPLES (SEM METAL) ===
+      color = envColor * mix(0.6, 1.0, fresnel) * uReflectionStrength;
+    }
+
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
 interface SceneProps {
   modelPaths: string[];
   texturePath?: string | null;
@@ -152,6 +234,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const pointLightRef = useRef<THREE.PointLight | null>(null);
   const directionalLightRef = useRef<THREE.DirectionalLight | null>(null);
 
+  // 🌐 Shader Reflexivo com HDRI Equirectangular
+  const equirectGLBsRef = useRef<Map<string, THREE.ShaderMaterial>>(new Map());
+  const equirectOriginalSidesRef = useRef<Map<string, THREE.Side>>(new Map());
+  const equirectHDRIRef = useRef<THREE.Texture | null>(null);
+  const [equirectGLBs, setEquirectGLBs] = useState<Set<string>>(new Set());
+  const [equirectFresnelPower, setEquirectFresnelPower] = useState(5.0);
+  const [equirectBrightness, setEquirectBrightness] = useState(1.0);
+  const [equirectMetalness, setEquirectMetalness] = useState(1.0);
+  const [equirectMetalColor, setEquirectMetalColor] = useState(new THREE.Color(1.0, 0.85, 0.55)); // Gold default
+  const [equirectUseMetal, setEquirectUseMetal] = useState(true); // Checkbox para habilitar metal
+  const [equirectReflectionStrength, setEquirectReflectionStrength] = useState(1.0); // Para modo simples
+
   // 🎨 Referências para materiais PBR dos GLBs (MeshStandardMaterial com onBeforeCompile)
   const glbPbrMaterialsRef = useRef<Map<string, PBRMaterialWithShader>>(new Map());
   const shaderTimeRef = useRef(0);
@@ -217,6 +311,48 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   }, [bloomThreshold, useARCamera]);
 
+  // 🌐 Atualiza Fresnel Power do shader equirectangular
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uFresnelPower.value = equirectFresnelPower;
+    });
+  }, [equirectFresnelPower]);
+
+  // 🌐 Atualiza Brightness do shader equirectangular
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBrightness.value = equirectBrightness;
+    });
+  }, [equirectBrightness]);
+
+  // 🌐 Atualiza Metalness do shader equirectangular
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uMetalness.value = equirectMetalness;
+    });
+  }, [equirectMetalness]);
+
+  // 🌐 Atualiza Metal Color do shader equirectangular
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uMetalColor.value.copy(equirectMetalColor);
+    });
+  }, [equirectMetalColor]);
+
+  // 🌐 Atualiza Use Metal do shader equirectangular
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uUseMetal.value = equirectUseMetal ? 1.0 : 0.0;
+    });
+  }, [equirectUseMetal]);
+
+  // 🌐 Atualiza Reflection Strength do shader equirectangular (modo simples)
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uReflectionStrength.value = equirectReflectionStrength;
+    });
+  }, [equirectReflectionStrength]);
+
   // Função para atualizar a posição de um objeto com smooth transition
   const updateObjectPosition = (objectName: string, axis: 'x' | 'y' | 'z', value: number) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
@@ -273,7 +409,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   };
 
   // Função para atualizar a opacidade de um objeto
-  // 🎛 Roteamento correto: .ply/.splat → uOpacity uniform | .glb → material.opacity padrão
+  // 🎛 Roteamento correto: .ply/.splat → uOpacity uniform | .glb → uAlpha uniform
   const updateObjectOpacity = (objectName: string, opacity: number) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
     if (objData) {
@@ -288,11 +424,22 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         const material = (objData.object as THREE.Points | THREE.Mesh).material as THREE.ShaderMaterial;
         if (material && material.uniforms && material.uniforms.uOpacity) {
           material.uniforms.uOpacity.value = objData.opacity;
-          console.log(`🎨 PLY/SPLAT Opacity: ${objectName} = ${objData.opacity} (uniform)`);
+          console.log(`🎨 PLY/SPLAT Opacity: ${objectName} = ${objData.opacity.toFixed(2)} (uniform)`);
         }
       } else {
-        // 📦 GLB: Mantém lógica atual (material padrão)
-        console.log(`🎨 GLB Opacity: ${objectName} = ${objData.opacity}`);
+        // 📦 GLB: Atualiza uAlpha uniform no shader injetado
+        objData.object.traverse((child: THREE.Object3D) => {
+          const mesh = child as THREE.Mesh;
+          if (mesh.isMesh && mesh.material) {
+            const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            materials.forEach((mat) => {
+              if (mat && (mat as any).uniforms && (mat as any).uniforms.uAlpha) {
+                (mat as any).uniforms.uAlpha.value = objData.opacity;
+              }
+            });
+          }
+        });
+        console.log(`🎨 GLB Opacity: ${objectName} = ${objData.opacity.toFixed(2)} (uniform uAlpha)`);
       }
     } else {
       console.error(`❌ Objeto não encontrado: ${objectName}`);
@@ -428,7 +575,38 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   };
 
-  // Função para alternar visibilidade de um objeto
+  // 🌐 Funções de preset para metalness
+  const applyMetalPreset = (presetName: string) => {
+    const presets: { [key: string]: { color: THREE.Color; metalness: number; name: string } } = {
+      gold: {
+        color: new THREE.Color(1.0, 0.71, 0.29),
+        metalness: 1.0,
+        name: '🟡 Ouro'
+      },
+      copper: {
+        color: new THREE.Color(0.95, 0.64, 0.54),
+        metalness: 1.0,
+        name: '🟠 Cobre'
+      },
+      scifiBlue: {
+        color: new THREE.Color(0.6, 0.7, 1.0),
+        metalness: 1.0,
+        name: '🔵 Aço Azulado'
+      },
+      aluminum: {
+        color: new THREE.Color(0.91, 0.92, 0.92),
+        metalness: 0.9,
+        name: '⚪ Alumínio'
+      },
+    };
+
+    const preset = presets[presetName];
+    if (preset) {
+      setEquirectMetalColor(preset.color.clone());
+      setEquirectMetalness(preset.metalness);
+      console.log(`✅ Preset aplicado: ${preset.name}`);
+    }
+  };
   const toggleObjectVisibility = (objectName: string, visible: boolean) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
     if (objData) {
@@ -499,6 +677,139 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         setBgTextureEnabled(false);
         console.log('🔲 Background só desativada (environment ativo)');
       }
+    }
+  };
+
+  // 🌐 Função para aplicar shader reflexivo com HDRI Equirectangular ao GLB
+  const applyEquirectangularShaderToGLB = (mesh: THREE.Mesh, objectName: string, hdriTexture: THREE.Texture) => {
+    // Armazena o side original do material antes de mudar
+    const originalMaterial = mesh.material;
+    let originalSide = THREE.DoubleSide;
+    if (originalMaterial && !Array.isArray(originalMaterial)) {
+      originalSide = (originalMaterial as any).side || THREE.DoubleSide;
+    }
+    equirectOriginalSidesRef.current.set(objectName, originalSide);
+
+    const equirectMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uEnvMap: { value: hdriTexture },
+        uBrightness: { value: equirectBrightness },
+        uMetalness: { value: equirectMetalness },
+        uMetalColor: { value: equirectMetalColor.clone() },
+        uFresnelPower: { value: equirectFresnelPower },
+        uReflectionStrength: { value: equirectReflectionStrength },
+        uUseMetal: { value: equirectUseMetal ? 1.0 : 0.0 },
+      },
+      vertexShader: equirectangularReflectionVertexShader,
+      fragmentShader: equirectangularReflectionFragmentShader,
+      side: THREE.FrontSide,
+      depthWrite: true,
+      depthTest: true,
+    });
+
+    mesh.material = equirectMaterial;
+    equirectGLBsRef.current.set(objectName, equirectMaterial);
+    console.log(`🌐 Shader Equirectangular aplicado (backface culling ativo): ${objectName}`);
+  };
+
+  // 🌐 Função para remover shader equirectangular e restaurar material original
+  const removeEquirectangularShaderFromGLB = (mesh: THREE.Mesh, objectName: string) => {
+    const originalMaterial = mesh.material;
+    if (originalMaterial instanceof THREE.Material) {
+      (originalMaterial as THREE.Material).dispose();
+    }
+    
+    // Recupera o side original que foi armazenado
+    const originalSide = equirectOriginalSidesRef.current.get(objectName) || THREE.DoubleSide;
+    
+    const defaultMaterial = new THREE.MeshStandardMaterial({
+      color: 0x808080,
+      metalness: 0.5,
+      roughness: 0.5,
+      side: originalSide,
+    });
+    
+    mesh.material = defaultMaterial;
+    equirectGLBsRef.current.delete(objectName);
+    equirectOriginalSidesRef.current.delete(objectName);
+    console.log(`🔲 Shader equirectangular removido (side restaurado): ${objectName}`);
+  };
+
+  // 🌐 Função para toggle do shader equirectangular
+  const toggleEquirectangularShader = (objectName: string, enableEquirect: boolean) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (!objData) {
+      console.error(`❌ Objeto não encontrado: ${objectName}`);
+      return;
+    }
+
+    let mesh: THREE.Mesh | null = null;
+    
+    objData.object.traverse((child: THREE.Object3D) => {
+      if ((child as THREE.Mesh).isMesh && !mesh) {
+        mesh = child as THREE.Mesh;
+      }
+    });
+
+    if (!mesh) {
+      console.error(`❌ Nenhum mesh encontrado em: ${objectName}`);
+      return;
+    }
+
+    if (enableEquirect) {
+      // Prioriza usar o background texture se disponível
+      if (bgTextureRef.current) {
+        const bgTexture = bgTextureRef.current.clone();
+        bgTexture.mapping = THREE.EquirectangularReflectionMapping;
+        equirectHDRIRef.current = bgTexture;
+        applyEquirectangularShaderToGLB(mesh, objectName, bgTexture);
+        setEquirectGLBs(prev => new Set([...prev, objectName]));
+        console.log(`✅ Background texture usado como mapa de reflexão: ${objectName}`);
+      } else if (!equirectHDRIRef.current) {
+        // Fallback: se não tem background, tenta carregar um HDRI padrão
+        const textureLoader = new THREE.TextureLoader();
+        textureLoader.load(
+          'https://threejs.org/examples/textures/equirectangular/venice_sunset_1k.hdr',
+          (texture) => {
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            equirectHDRIRef.current = texture;
+            if (mesh) {
+              applyEquirectangularShaderToGLB(mesh, objectName, texture);
+            }
+            setEquirectGLBs(prev => new Set([...prev, objectName]));
+            console.log(`✅ HDRI padrão carregado e shader aplicado: ${objectName}`);
+          },
+          undefined,
+          () => {
+            // Fallback final: cria uma textura simples se falhar
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#444444';
+              ctx.fillRect(0, 0, 1024, 512);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            equirectHDRIRef.current = texture;
+            if (mesh) {
+              applyEquirectangularShaderToGLB(mesh, objectName, texture);
+            }
+            setEquirectGLBs(prev => new Set([...prev, objectName]));
+          }
+        );
+      } else {
+        applyEquirectangularShaderToGLB(mesh, objectName, equirectHDRIRef.current);
+        setEquirectGLBs(prev => new Set([...prev, objectName]));
+      }
+    } else {
+      removeEquirectangularShaderFromGLB(mesh, objectName);
+      setEquirectGLBs(prev => {
+        const next = new Set(prev);
+        next.delete(objectName);
+        return next;
+      });
     }
   };
 
@@ -2072,6 +2383,163 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           </div>
         </div>
 
+        {/* 🌐 Shader HDRI Equirectangular */}
+        {equirectGLBs.size > 0 && (
+          <div className="mb-3 border-b border-white/20 pb-2">
+            <p className="font-semibold text-green-400 mb-2">🌐 HDRI Equirectangular:</p>
+            <div className="space-y-2">
+              {/* Checkbox para habilitar/desabilitar metal */}
+              <div className="flex items-center gap-2 mb-2 p-2 bg-gray-700 rounded">
+                <input
+                  type="checkbox"
+                  id="useMetal"
+                  checked={equirectUseMetal}
+                  onChange={e => setEquirectUseMetal(e.target.checked)}
+                  className="w-4 h-4 cursor-pointer"
+                />
+                <label htmlFor="useMetal" className="text-[9px] text-gray-300 cursor-pointer flex-1">
+                  {equirectUseMetal ? '✅ Modo Metal (PBR)' : '📊 Modo Reflexão Simples'}
+                </label>
+              </div>
+
+              {/* Renderiza controles diferentes baseado no modo */}
+              {equirectUseMetal ? (
+                <>
+                  {/* Presets */}
+                  <div>
+                    <p className="text-[9px] text-gray-400 mb-1">🎨 Presets Metalness:</p>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        onClick={() => applyMetalPreset('gold')}
+                        className="py-1 px-2 bg-yellow-600 hover:bg-yellow-700 rounded text-[8px] font-semibold"
+                      >
+                        🟡 Ouro
+                      </button>
+                      <button
+                        onClick={() => applyMetalPreset('copper')}
+                        className="py-1 px-2 bg-orange-600 hover:bg-orange-700 rounded text-[8px] font-semibold"
+                      >
+                        🟠 Cobre
+                      </button>
+                      <button
+                        onClick={() => applyMetalPreset('scifiBlue')}
+                        className="py-1 px-2 bg-blue-600 hover:bg-blue-700 rounded text-[8px] font-semibold"
+                      >
+                        🔵 Aço Azulado
+                      </button>
+                      <button
+                        onClick={() => applyMetalPreset('aluminum')}
+                        className="py-1 px-2 bg-gray-500 hover:bg-gray-600 rounded text-[8px] font-semibold"
+                      >
+                        ⚪ Alumínio
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Brilho: {equirectBrightness.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={equirectBrightness}
+                      onChange={e => setEquirectBrightness(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Metalness: {equirectMetalness.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={equirectMetalness}
+                      onChange={e => setEquirectMetalness(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Metal Color (Hex):
+                    </label>
+                    <div className="flex gap-1">
+                      <input
+                        type="color"
+                        value={'#' + equirectMetalColor.getHexString()}
+                        onChange={e => {
+                          const color = new THREE.Color(e.target.value);
+                          color.convertSRGBToLinear();
+                          setEquirectMetalColor(color);
+                        }}
+                        className="flex-1 h-6 rounded cursor-pointer"
+                      />
+                      <span className="text-[9px] text-gray-400 self-center">
+                        RGB({equirectMetalColor.r.toFixed(2)}, {equirectMetalColor.g.toFixed(2)}, {equirectMetalColor.b.toFixed(2)})
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Fresnel Power: {equirectFresnelPower.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="10"
+                      step="0.1"
+                      value={equirectFresnelPower}
+                      onChange={e => setEquirectFresnelPower(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Controles para modo reflexão simples */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Reflection Strength: {equirectReflectionStrength.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={equirectReflectionStrength}
+                      onChange={e => setEquirectReflectionStrength(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      Fresnel Power: {equirectFresnelPower.toFixed(2)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="10"
+                      step="0.1"
+                      value={equirectFresnelPower}
+                      onChange={e => setEquirectFresnelPower(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Saved Cameras */}
         {savedCameras.length > 0 && (
           <div className="mb-3 border-b border-white/20 pb-2">
@@ -2237,6 +2705,21 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                             className="flex-1 h-1"
                           />
                           <span className="text-[9px] text-white/60 w-8">1.0</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-2 mt-2">
+                          <input 
+                            type="checkbox"
+                            id={`equirect-${obj.name}`}
+                            checked={equirectGLBs.has(obj.name)}
+                            onChange={(e) => {
+                              toggleEquirectangularShader(obj.name, e.target.checked);
+                            }}
+                            className="w-4 h-4 cursor-pointer"
+                          />
+                          <label htmlFor={`equirect-${obj.name}`} className="text-[9px] text-green-300">
+                            🌐 HDRI Equirectangular
+                          </label>
                         </div>
                       </div>
                       

@@ -259,6 +259,9 @@ const particleVertexShader = `
   uniform float uParticleSpeed;
   uniform float uBurstStrength;    // ex: 3.0 - força do burst inicial
   uniform float uSettleTime;       // ex: 1.5 - tempo até estabilizar (segundos)
+  uniform float uAttractorStrength; // 0.0 - 2.0 - força de atração orbital
+  uniform float uOrbitDistance;     // 0.5 - 2.0 - distância orbital do centro
+  uniform float uOrbitSpeed;        // 0.5 - 3.0 - velocidade de rotação orbital
 
   attribute vec2 aSeed;
   attribute float aLife;
@@ -322,15 +325,14 @@ const particleVertexShader = `
 
     vec2 uv = aSeed;
 
-    // Verifica se está na edge (amostra texture)
-    float edge = texture2D(tEdge, uv).r;
-    
-    // Se não está na edge, descarta
-    if (edge < 0.1) {
-      gl_PointSize = 0.0;
-      gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-      return;
-    }
+    // ⚡ OTIMIZAÇÃO: Todas as partículas já estão nas edges (não precisa verificar)
+    // Se você quiser re-habilitar verificação, descomente:
+    // float edge = texture2D(tEdge, uv).r;
+    // if (edge < 0.1) {
+    //   gl_PointSize = 0.0;
+    //   gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+    //   return;
+    // }
 
     // Centro da tela (atractor)
     vec2 center = vec2(0.5);
@@ -344,10 +346,31 @@ const particleVertexShader = `
     // Curl noise orgânico
     vec2 curl = curlNoise(uv * 6.0 + uTime * 0.8) * uCurlStrength;
 
-    // Campo de fluxo combinado
-    vec2 flow = vortex + curl;
+    // ✨ CAMPO DE ATRAÇÃO ORBITAL
+    // Distância desejada da órbita (varia com seed para órbitas em diferentes alturas)
+    float targetOrbitDist = uOrbitDistance * (0.7 + aSeed.x * 0.6);
+    float distDiff = dist - targetOrbitDist;
+    
+    // Força de atração: puxa para a órbita ideal (não para o centro)
+    vec2 attractorForce = -normalize(dir) * distDiff * uAttractorStrength * 2.0;
+    
+    // Velocidade orbital tangencial (rotação suave ao redor do objeto)
+    float orbitPhase = aSeed.y * 6.283 + uTime * uOrbitSpeed;
+    vec2 orbitTangent = vec2(-dir.y, dir.x);
+    vec2 orbitalMotion = orbitTangent * uOrbitSpeed * 0.3;
+    
+    // Perturbação suave com curl noise para movimento orgânico
+    vec2 perturbation = curl * 0.3;
 
-    // Trajetória: sai da edge, segue o flow, é absorvida ao centro
+    // Campo de fluxo combinado: blend entre vortex e orbital
+    vec2 vortexFlow = vortex + curl;
+    vec2 orbitalFlow = attractorForce + orbitalMotion + perturbation;
+    
+    // Mix baseado na força do attractor (0 = só vortex, 1 = só orbital)
+    float attractorBlend = smoothstep(0.0, 1.0, uAttractorStrength);
+    vec2 flow = mix(vortexFlow, orbitalFlow, attractorBlend);
+
+    // Trajetória: segue o campo de fluxo
     vec2 pos = uv + flow * vLife * uParticleSpeed;
 
     // CRITICAL FIX: Converte de screen space [0,1] para world space
@@ -527,6 +550,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [particleSize, setParticleSize] = useState(1.0); // 0.3 - 2.0
   const [particleBurstStrength, setParticleBurstStrength] = useState(3.0); // 0.5 - 5.0
   const [particleSettleTime, setParticleSettleTime] = useState(1.5); // 0.5 - 3.0 (segundos)
+  const [particleAttractorStrength, setParticleAttractorStrength] = useState(0.0); // 0.0 - 2.0 (0 = vortex, 2 = orbital forte)
+  const [particleOrbitDistance, setParticleOrbitDistance] = useState(1.2); // 0.5 - 2.0 (raio da órbita)
+  const [particleOrbitSpeed, setParticleOrbitSpeed] = useState(1.0); // 0.5 - 3.0 (velocidade de rotação)
+  const [particleFollowCamera, setParticleFollowCamera] = useState(true); // Partículas seguem rotação da câmera
   const [debugEdgeTexture, setDebugEdgeTexture] = useState(false); // Debug: renderiza edge texture
 
   // --- HOOKS DEVEM FICAR AQUI, NO TOPO DO COMPONENTE ---
@@ -703,6 +730,27 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       system.material.uniforms.uSettleTime.value = particleSettleTime;
     });
   }, [particleSettleTime]);
+
+  // 🌪️ Atualiza força de atração orbital
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uAttractorStrength.value = particleAttractorStrength;
+    });
+  }, [particleAttractorStrength]);
+
+  // 🌪️ Atualiza distância orbital
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uOrbitDistance.value = particleOrbitDistance;
+    });
+  }, [particleOrbitDistance]);
+
+  // 🌪️ Atualiza velocidade orbital
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uOrbitSpeed.value = particleOrbitSpeed;
+    });
+  }, [particleOrbitSpeed]);
 
   // 🔍 DEBUG: Toggle edge texture visualization
   useEffect(() => {
@@ -1279,19 +1327,53 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
       console.log(`✅ Edge Detection Pass completa: ${objectName}`);
 
-      // 3️⃣ PARTICLE PASS - Cria sistema de partículas
+      // 3️⃣ LÊ PIXELS DA EDGE TEXTURE - Coleta coordenadas UV reais onde há edge
+      const edgePixelData = new Uint8Array(width * height * 4);
+      renderer.setRenderTarget(edgeTarget);
+      renderer.readRenderTargetPixels(edgeTarget, 0, 0, width, height, edgePixelData);
+      renderer.setRenderTarget(null);
+
+      // Coleta coordenadas UV de pixels que são edge (valor R > 25)
+      const edgeCoords: Array<{ u: number; v: number }> = [];
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * width + x) * 4;
+          const edgeValue = edgePixelData[idx]; // Canal R (grayscale)
+          
+          if (edgeValue > 25) { // Threshold para detectar edge
+            edgeCoords.push({
+              u: x / width,
+              v: y / height,
+            });
+          }
+        }
+      }
+
+      console.log(`🔍 Edge pixels detectados: ${edgeCoords.length} / ${width * height}`);
+
+      // Se não encontrou edges suficientes, usa distribuição aleatória como fallback
+      const hasValidEdges = edgeCoords.length > 100;
       const particleCount = Math.floor(2048 * particleDensity);
       const geometry = new THREE.BufferGeometry();
 
-      // Atributos: seed (UV aleatório) e life (offset para ciclo)
+      // Atributos: seed (UV das edges reais) e life (offset para ciclo)
       const seeds = new Float32Array(particleCount * 2);
       const lives = new Float32Array(particleCount);
       const positions = new Float32Array(particleCount * 3); // Position attribute
 
       for (let i = 0; i < particleCount; i++) {
-        seeds[i * 2] = Math.random();      // x UV
-        seeds[i * 2 + 1] = Math.random();  // y UV
-        lives[i] = Math.random();          // offset de fase
+        if (hasValidEdges) {
+          // Escolhe aleatoriamente uma coordenada UV de edge real
+          const randomEdge = edgeCoords[Math.floor(Math.random() * edgeCoords.length)];
+          seeds[i * 2] = randomEdge.u;
+          seeds[i * 2 + 1] = randomEdge.v;
+        } else {
+          // Fallback: distribuição aleatória
+          seeds[i * 2] = Math.random();
+          seeds[i * 2 + 1] = Math.random();
+        }
+        
+        lives[i] = Math.random(); // offset de fase
         
         // Posições iniciais no center (0, 0, 0) - shader vai mover elas
         positions[i * 3] = 0.0;
@@ -1314,6 +1396,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           uParticleSpeed: { value: particleSpeed },
           uBurstStrength: { value: particleBurstStrength },
           uSettleTime: { value: particleSettleTime },
+          uAttractorStrength: { value: particleAttractorStrength },
+          uOrbitDistance: { value: particleOrbitDistance },
+          uOrbitSpeed: { value: particleOrbitSpeed },
         },
         vertexShader: particleVertexShader,
         fragmentShader: particleFragmentShader,
@@ -2382,6 +2467,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             cameraAR.rotation.z = THREE.MathUtils.degToRad(gamma); // roll
           }
           
+          // 📷 Follow Camera: Rotaciona sistema de partículas para seguir câmera
+          if (particleFollowCamera) {
+            const activeCamera = useARCamera ? cameraAR : camera;
+            particleSystemsRef.current.forEach((system) => {
+              // Copia APENAS rotação da câmera para o sistema de partículas
+              system.points.rotation.copy(activeCamera.rotation);
+            });
+          } else {
+            // Reseta rotação quando followCamera está desativado
+            particleSystemsRef.current.forEach((system) => {
+              system.points.rotation.set(0, 0, 0);
+            });
+          }
+          
           // Atualiza controles apenas para câmera principal
           if (!useARCamera) {
             controls.update();
@@ -3292,9 +3391,71 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                     />
                   </div>
 
+                  {/* Follow Camera Toggle */}
+                  <label className="flex items-center justify-between text-[8px] text-gray-300 cursor-pointer hover:text-white transition">
+                    <span>📷 Follow Camera</span>
+                    <input
+                      type="checkbox"
+                      checked={particleFollowCamera}
+                      onChange={e => setParticleFollowCamera(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                  </label>
+
+                  {/* Attractor Strength (0 = vortex puro, 2 = orbital forte) */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] text-gray-300 flex items-center justify-between">
+                      <span>🧲 Orbital Attractor</span>
+                      <span className="font-mono text-cyan-400">{particleAttractorStrength.toFixed(2)}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="2.0"
+                      step="0.1"
+                      value={particleAttractorStrength}
+                      onChange={e => setParticleAttractorStrength(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Orbit Distance */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] text-gray-300 flex items-center justify-between">
+                      <span>🌀 Orbit Radius</span>
+                      <span className="font-mono text-cyan-400">{particleOrbitDistance.toFixed(2)}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.1"
+                      value={particleOrbitDistance}
+                      onChange={e => setParticleOrbitDistance(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Orbit Speed */}
+                  <div className="space-y-0.5">
+                    <label className="text-[8px] text-gray-300 flex items-center justify-between">
+                      <span>🔄 Orbit Speed</span>
+                      <span className="font-mono text-cyan-400">{particleOrbitSpeed.toFixed(2)}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="3.0"
+                      step="0.1"
+                      value={particleOrbitSpeed}
+                      onChange={e => setParticleOrbitSpeed(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
                   {/* Info */}
                   <div className="text-[7px] text-gray-500 p-1 bg-gray-800 rounded">
-                    ✨ GPU-accelerated | Screen-space edges | Curl Noise + Vortex Field | Burst → Steady Emission
+                    ✨ GPU-accelerated | Orbital + Vortex | Camera Follow | Smooth Float
                   </div>
 
                   {/* Debug: Visualize Edge Texture */}

@@ -54,12 +54,16 @@ void main() {
 const equirectangularReflectionVertexShader = `
   varying vec3 vWorldNormal;
   varying vec3 vViewDir;
+  varying vec2 vUv;
+  varying vec3 vPosition;
 
   void main() {
     vec4 worldPos = modelMatrix * vec4(position, 1.0);
 
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
     vViewDir = normalize(cameraPosition - worldPos.xyz);
+    vUv = uv;
+    vPosition = position;
 
     gl_Position = projectionMatrix * viewMatrix * worldPos;
   }
@@ -76,9 +80,15 @@ const equirectangularReflectionFragmentShader = `
   uniform float uReflectionStrength;
   uniform float uUseMetal;
   uniform float uTime;
+  uniform float uHologramEnabled;     // 0.0 ou 1.0 - toggle do efeito
+  uniform float uHologramIntensity;   // 0.0 - 0.1 - intensidade da distorção
+  uniform float uHologramFrequency;   // 10.0 - 50.0 - frequência das ondas
+  uniform float uHologramSpeed;       // 0.5 - 5.0 - velocidade da animação
   
   varying vec3 vWorldNormal;
   varying vec3 vViewDir;
+  varying vec2 vUv;
+  varying vec3 vPosition;
 
   // ===== NOISE PROCEDURAL (SEM TEXTURA) =====
   // Hash - gera pseudo-aleatório determinístico
@@ -119,6 +129,27 @@ const equirectangularReflectionFragmentShader = `
   void main() {
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(vViewDir);
+
+    // 🌀 HOLOGRAM EDGE DISTORTION
+    vec3 distortedNormal = N;
+    if (uHologramEnabled > 0.5) {
+      // Detecta edges usando Fresnel
+      float edgeFresnel = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+      float edgeMask = smoothstep(0.3, 0.8, edgeFresnel);
+      
+      // Distorção procedural baseada em posição + tempo
+      vec2 distortUV = vUv;
+      float distortX = sin(vPosition.y * uHologramFrequency + uTime * uHologramSpeed) * uHologramIntensity * edgeMask;
+      float distortY = cos(vPosition.x * uHologramFrequency + uTime * uHologramSpeed) * uHologramIntensity * edgeMask;
+      
+      // Aplica distorção na normal (simula geometria distorcida)
+      distortedNormal.x += distortX;
+      distortedNormal.y += distortY;
+      distortedNormal = normalize(distortedNormal);
+    }
+    
+    // Usa normal distorcida para cálculos de reflexão
+    N = distortedNormal;
 
     // ===== EFEITO BURACO NEGRO (Black Hole) COM NOISE =====
     // 1️⃣ EDGE DETECTION - Fresnel com espessura em pixels (fwidth)
@@ -527,6 +558,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [equirectMetalColor, setEquirectMetalColor] = useState(new THREE.Color(1.0, 0.85, 0.55)); // Gold default
   const [equirectUseMetal, setEquirectUseMetal] = useState(true); // Checkbox para habilitar metal
   const [equirectReflectionStrength, setEquirectReflectionStrength] = useState(1.0); // Para modo simples
+  const [hologramEnabled, setHologramEnabled] = useState(false); // Toggle do efeito holográfico
+  const [hologramIntensity, setHologramIntensity] = useState(0.03); // 0.0 - 0.1
+  const [hologramFrequency, setHologramFrequency] = useState(20.0); // 10.0 - 50.0
+  const [hologramSpeed, setHologramSpeed] = useState(2.0); // 0.5 - 5.0
 
   // 🎨 Referências para materiais PBR dos GLBs (MeshStandardMaterial com onBeforeCompile)
   const glbPbrMaterialsRef = useRef<Map<string, PBRMaterialWithShader>>(new Map());
@@ -658,6 +693,34 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       material.uniforms.uReflectionStrength.value = equirectReflectionStrength;
     });
   }, [equirectReflectionStrength]);
+
+  // 🌐 Atualiza Hologram Enabled
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uHologramEnabled.value = hologramEnabled ? 1.0 : 0.0;
+    });
+  }, [hologramEnabled]);
+
+  // 🌐 Atualiza Hologram Intensity
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uHologramIntensity.value = hologramIntensity;
+    });
+  }, [hologramIntensity]);
+
+  // 🌐 Atualiza Hologram Frequency
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uHologramFrequency.value = hologramFrequency;
+    });
+  }, [hologramFrequency]);
+
+  // 🌐 Atualiza Hologram Speed
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uHologramSpeed.value = hologramSpeed;
+    });
+  }, [hologramSpeed]);
 
   // 🌐 Atualiza Time do shader equirectangular + Particle systems (para animação de onda)
   useEffect(() => {
@@ -1122,6 +1185,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         uReflectionStrength: { value: equirectReflectionStrength },
         uUseMetal: { value: equirectUseMetal ? 1.0 : 0.0 },
         uTime: { value: 0.0 },
+        uHologramEnabled: { value: hologramEnabled ? 1.0 : 0.0 },
+        uHologramIntensity: { value: hologramIntensity },
+        uHologramFrequency: { value: hologramFrequency },
+        uHologramSpeed: { value: hologramSpeed },
       },
       vertexShader: equirectangularReflectionVertexShader,
       fragmentShader: equirectangularReflectionFragmentShader,
@@ -3251,6 +3318,71 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                       onChange={e => setEquirectFresnelPower(parseFloat(e.target.value))}
                       className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                     />
+                  </div>
+
+                  {/* 🌟 Hologram Edge Distortion */}
+                  <div className="border-t border-purple-500/30 pt-2 mt-2">
+                    <div className="flex items-center gap-2 mb-2 p-2 bg-purple-900/20 rounded">
+                      <input
+                        type="checkbox"
+                        id="hologramEnabled"
+                        checked={hologramEnabled}
+                        onChange={e => setHologramEnabled(e.target.checked)}
+                        className="w-4 h-4 cursor-pointer"
+                      />
+                      <label htmlFor="hologramEnabled" className="text-[9px] text-purple-300 cursor-pointer flex-1">
+                        {hologramEnabled ? '🌟 Hologram Edge ON' : '🌑 Hologram Edge OFF'}
+                      </label>
+                    </div>
+
+                    {hologramEnabled && (
+                      <>
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Intensity: {hologramIntensity.toFixed(3)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="0.1"
+                            step="0.005"
+                            value={hologramIntensity}
+                            onChange={e => setHologramIntensity(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Frequency: {hologramFrequency.toFixed(1)}
+                          </label>
+                          <input
+                            type="range"
+                            min="10"
+                            max="50"
+                            step="1"
+                            value={hologramFrequency}
+                            onChange={e => setHologramFrequency(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Speed: {hologramSpeed.toFixed(1)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="5.0"
+                            step="0.1"
+                            value={hologramSpeed}
+                            onChange={e => setHologramSpeed(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
                 </>
               )}

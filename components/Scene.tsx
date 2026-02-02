@@ -75,9 +75,34 @@ const equirectangularReflectionFragmentShader = `
   uniform float uFresnelPower;
   uniform float uReflectionStrength;
   uniform float uUseMetal;
+  uniform float uTime;
   
   varying vec3 vWorldNormal;
   varying vec3 vViewDir;
+
+  // ===== NOISE PROCEDURAL (SEM TEXTURA) =====
+  // Hash - gera pseudo-aleatório determinístico
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+
+  // Noise - interpolação perlin-like
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+
+    // Smoothstep para interpolação suave
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    
+    float ab = mix(a, b, u.x);
+    float cd = mix(c, d, u.x);
+    return mix(ab, cd, u.y);
+  }
 
   // Direção → UV equiretangular
   vec2 equirectangularUV(vec3 dir) {
@@ -95,40 +120,274 @@ const equirectangularReflectionFragmentShader = `
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(vViewDir);
 
+    // ===== EFEITO BURACO NEGRO (Black Hole) COM NOISE =====
+    // 1️⃣ EDGE DETECTION - Fresnel com espessura em pixels (fwidth)
+    float edgeFresnel = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+    float edge = smoothstep(0.35, 0.85, edgeFresnel);
+    
+    // Espessura constante em pixels usando fwidth - RESTRITO ÀS EDGES
+    float edgeWidth = fwidth(edge) * 4.0;
+    float edgeMask = smoothstep(0.0, edgeWidth, edge);
+    float edgeRestriction = smoothstep(0.5, 1.0, edge); // Restringe o efeito muito mais para perto das edges
+
+    // 2️⃣ NOISE PROCEDURAL ORGÂNICO
+    // Noise em screen-space para distorção caótica
+    float n = noise(gl_FragCoord.xy * 0.15 + uTime * 0.8);
+    
+    // 3️⃣ WAVE COM NOISE - Padrão mais orgânico
+    float waveNoise = sin(edge * 22.0 + n * 6.283 + uTime * 2.0);
+    
+    // Modula intensidade com chaos do noise
+    float chaos = smoothstep(0.2, 0.8, n);
+    waveNoise *= chaos;
+    
+    // 4️⃣ CURVA DE ENERGIA NÃO-LINEAR
+    // Usa abs() para picos de intensidade + pow() para contraste
+    float energy = abs(waveNoise);
+    energy = pow(energy, 1.4); // Curva exponencial para mais drama
+
+    // 5️⃣ DISTORÇÃO GRAVITACIONAL - Usando energia
     vec3 R = reflect(-V, N);
-    vec3 envColor = texture2D(uEnvMap, equirectangularUV(R)).rgb;
+    
+    // Amplitude dinâmica baseada em energia
+    float distortAmount = energy * 0.12; // ~12% de distorção máxima
+    float distortIntensity = edge * energy * 0.6;
+    
+    // Cria direção de distorção radial para dentro
+    vec3 distortDir = normalize(R + N * distortIntensity);
+    vec3 R_distorted = mix(R, distortDir, distortAmount);
+    
+    vec3 envColor = texture2D(uEnvMap, equirectangularUV(R_distorted)).rgb;
 
     // Fresnel (Schlick simplificado)
     float NdotV = clamp(dot(N, V), 0.0, 1.0);
     float fresnel = pow(1.0 - NdotV, uFresnelPower);
 
+    // 6️⃣ COLOR GRADING COM ENERGY CURVE
+    vec3 darkColor = vec3(0.01, 0.0, 0.03);     // Azul escuro profundo
+    vec3 brightColor = vec3(0.9, 0.6, 1.2);     // Magenta/Rosa brilhante
+    vec3 edgeColor = mix(darkColor, brightColor, energy);
+
     vec3 color;
     
     if (uUseMetal > 0.5) {
-      // === MODO METAL ===
-      // Dieletric padrão (~4% de reflexão)
+      // === MODO METAL COM BURACO NEGRO CAÓTICO ===
       vec3 dielectricSpec = vec3(0.04);
-
-      // Metal: cor do metal * energia
       vec3 metalSpec = uMetalColor;
-
-      // Mistura física aproximada
       vec3 specColor = mix(dielectricSpec, metalSpec, uMetalness);
-
-      // Reflexão final
       vec3 reflection = envColor * specColor;
-
-      // Fresnel controla intensidade angular
       color = reflection * mix(0.25, 1.0, fresnel);
-
-      // Brilho global
       color *= uBrightness;
+      
+      // Aplica efeito buraco negro restrito às edges (30% do efeito original)
+      color = mix(color, edgeColor, edgeRestriction * energy * 0.3);
+      
     } else {
-      // === MODO REFLEXÃO SIMPLES (SEM METAL) ===
+      // === MODO REFLEXÃO SIMPLES COM BURACO NEGRO CAÓTICO ===
       color = envColor * mix(0.6, 1.0, fresnel) * uReflectionStrength;
+      
+      // Aplica efeito buraco negro restrito às edges (30% do efeito original)
+      color = mix(color, edgeColor, edgeRestriction * energy * 0.3);
     }
 
     gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+// ====================================
+// 🌪️ PARTICLE SYSTEM SHADERS
+// ====================================
+
+// 1️⃣ MASK PASS - Renderiza silhueta branca
+const particleMaskVertexShader = `
+  void main() {
+    gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+  }
+`;
+
+const particleMaskFragmentShader = `
+  void main() {
+    gl_FragColor = vec4(1.0); // Branco sólido
+  }
+`;
+
+// 2️⃣ EDGE DETECTION PASS
+const particleEdgeVertexShader = `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position, 1.0);
+  }
+`;
+
+const particleEdgeFragmentShader = `
+  uniform sampler2D tMask;
+  uniform vec2 resolution;
+  
+  varying vec2 vUv;
+
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution;
+    float center = texture2D(tMask, uv).r;
+
+    float edge = 0.0;
+    float px = 1.0 / resolution.x;
+    float py = 1.0 / resolution.y;
+
+    edge += abs(center - texture2D(tMask, uv + vec2(px, 0.0)).r);
+    edge += abs(center - texture2D(tMask, uv + vec2(-px, 0.0)).r);
+    edge += abs(center - texture2D(tMask, uv + vec2(0.0, py)).r);
+    edge += abs(center - texture2D(tMask, uv + vec2(0.0, -py)).r);
+
+    edge = smoothstep(0.05, 0.2, edge);
+
+    gl_FragColor = vec4(edge);
+  }
+`;
+
+// 3️⃣ PARTICLE PASS - Curl Noise + Vórtice + Burst Emission
+const particleVertexShader = `
+  #define PI 3.141592653589793
+
+  uniform sampler2D tEdge;
+  uniform float uTime;
+  uniform vec2 uResolution;
+  uniform float uParticleDensity;
+  uniform float uVortexStrength;
+  uniform float uCurlStrength;
+  uniform float uParticleSpeed;
+  uniform float uBurstStrength;    // ex: 3.0 - força do burst inicial
+  uniform float uSettleTime;       // ex: 1.5 - tempo até estabilizar (segundos)
+
+  attribute vec2 aSeed;
+  attribute float aLife;
+
+  varying float vLife;
+  varying float vEmission;
+  varying vec3 vColor;
+
+  // Hash - pseudo-aleatório determinístico
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+
+  // Noise - interpolação Perlin-like
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) +
+           (c - a) * u.y * (1.0 - u.x) +
+           (d - b) * u.x * u.y;
+  }
+
+  // Curl Noise 2D (campo sem divergência)
+  vec2 curlNoise(vec2 p) {
+    float eps = 0.1;
+    float n1 = noise(p + vec2(0.0, eps));
+    float n2 = noise(p - vec2(0.0, eps));
+    float n3 = noise(p + vec2(eps, 0.0));
+    float n4 = noise(p - vec2(eps, 0.0));
+
+    float dx = (n1 - n2) / (2.0 * eps);
+    float dy = (n3 - n4) / (2.0 * eps);
+
+    return normalize(vec2(dy, -dx));
+  }
+
+  // Curva de emissão: burst no início → steady depois
+  float emissionCurve(float t) {
+    // Decaimento exponencial do burst
+    float burst = exp(-t * 2.5);
+    // Mix: se t <= uSettleTime, usa burst; senão, vai para 1.0 (constante)
+    return mix(1.0, burst * uBurstStrength, step(t, uSettleTime));
+  }
+
+  void main() {
+    // Idade da partícula (com variação por seed para não ficar sincronizado)
+    float age = mod(uTime + aSeed.x * 10.0, 10.0);
+    
+    // Ciclo de vida com influência da emissão
+    vLife = fract(aLife + uTime * 0.3);
+    
+    // Curva de emissão: controla intensidade ao longo do tempo
+    vEmission = emissionCurve(age);
+
+    vec2 uv = aSeed;
+
+    // Verifica se está na edge (amostra texture)
+    float edge = texture2D(tEdge, uv).r;
+    
+    // Se não está na edge, descarta
+    if (edge < 0.1) {
+      gl_PointSize = 0.0;
+      gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+
+    // Centro da tela (atractor)
+    vec2 center = vec2(0.5);
+    vec2 dir = uv - center;
+    float dist = length(dir) + 0.0001;
+
+    // Campo de vórtice: rotação + sucção
+    vec2 tangent = vec2(-dir.y, dir.x);
+    vec2 vortex = tangent * uVortexStrength * 0.4 - normalize(dir) * 0.3;
+
+    // Curl noise orgânico
+    vec2 curl = curlNoise(uv * 6.0 + uTime * 0.8) * uCurlStrength;
+
+    // Campo de fluxo combinado
+    vec2 flow = vortex + curl;
+
+    // Trajetória: sai da edge, segue o flow, é absorvida ao centro
+    vec2 pos = uv + flow * vLife * uParticleSpeed;
+
+    // CRITICAL FIX: Converte de screen space [0,1] para world space
+    // Usa automáticos do Three.js (projectionMatrix, modelViewMatrix)
+    vec3 worldPos = vec3(pos * 2.0 - 1.0, 0.0);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+
+    // Tamanho: maior no início, menor no fim, amplificado pelo burst
+    gl_PointSize = mix(8.0, 0.5, vLife) * vEmission;
+
+    // Cor: do escuro para magenta brilhante
+    vColor = mix(
+      vec3(0.05, 0.0, 0.15),  // Azul escuro
+      vec3(1.0, 0.6, 1.2),    // Magenta/Rosa
+      1.0 - vLife
+    );
+  }
+`;
+
+const particleFragmentShader = `
+  precision highp float;
+
+  varying float vLife;
+  varying float vEmission;
+  varying vec3 vColor;
+
+  void main() {
+    // Circle mask usando gl_PointCoord
+    vec2 uv = gl_PointCoord - 0.5;
+    float d = length(uv);
+
+    // Smooth circle
+    float alpha = smoothstep(0.5, 0.0, d);
+    // Fade-out no final da vida
+    alpha *= smoothstep(1.0, 0.6, vLife);
+
+    // Amplifica cor e brilho durante o burst
+    vec3 finalColor = vColor * vEmission;
+
+    gl_FragColor = vec4(finalColor, alpha);
   }
 `;
 
@@ -250,6 +509,26 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const glbPbrMaterialsRef = useRef<Map<string, PBRMaterialWithShader>>(new Map());
   const shaderTimeRef = useRef(0);
 
+  // 🌪️ PARTICLE SYSTEM REFS & STATES
+  const particleSystemsRef = useRef<Map<string, {
+    mask: THREE.WebGLRenderTarget;
+    edge: THREE.WebGLRenderTarget;
+    material: THREE.ShaderMaterial;
+    geometry: THREE.BufferGeometry;
+    points: THREE.Points;
+  }>>(new Map());
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+
+  const [particlesEnabled, setParticlesEnabled] = useState(true);
+  const [particleDensity, setParticleDensity] = useState(1.0); // 0.5 - 2.0
+  const [particleSpeed, setParticleSpeed] = useState(0.8); // 0.3 - 1.5
+  const [particleVortexStrength, setParticleVortexStrength] = useState(1.0); // 0.3 - 2.0
+  const [particleCurlStrength, setParticleCurlStrength] = useState(1.0); // 0.3 - 2.0
+  const [particleSize, setParticleSize] = useState(1.0); // 0.3 - 2.0
+  const [particleBurstStrength, setParticleBurstStrength] = useState(3.0); // 0.5 - 5.0
+  const [particleSettleTime, setParticleSettleTime] = useState(1.5); // 0.5 - 3.0 (segundos)
+  const [debugEdgeTexture, setDebugEdgeTexture] = useState(false); // Debug: renderiza edge texture
+
   // --- HOOKS DEVEM FICAR AQUI, NO TOPO DO COMPONENTE ---
   useEffect(() => {
     if (vignettePassRef.current) {
@@ -353,6 +632,97 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     });
   }, [equirectReflectionStrength]);
 
+  // 🌐 Atualiza Time do shader equirectangular + Particle systems (para animação de onda)
+  useEffect(() => {
+    let animationFrameId: number;
+    const startTime = performance.now();
+
+    const updateTime = () => {
+      const elapsed = (performance.now() - startTime) / 1000; // Converte para segundos
+      shaderTimeRef.current = elapsed;
+      
+      equirectGLBsRef.current.forEach((material) => {
+        material.uniforms.uTime.value = elapsed;
+      });
+
+      // Atualiza também o time das partículas
+      particleSystemsRef.current.forEach((system) => {
+        system.material.uniforms.uTime.value = elapsed;
+      });
+      
+      animationFrameId = requestAnimationFrame(updateTime);
+    };
+
+    animationFrameId = requestAnimationFrame(updateTime);
+
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, []);
+
+  // 🌪️ Atualiza densidade das partículas
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uParticleDensity.value = particleDensity;
+    });
+  }, [particleDensity]);
+
+  // 🌪️ Atualiza velocidade das partículas
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uParticleSpeed.value = particleSpeed;
+    });
+  }, [particleSpeed]);
+
+  // 🌪️ Atualiza força do vórtice
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uVortexStrength.value = particleVortexStrength;
+    });
+  }, [particleVortexStrength]);
+
+  // 🌪️ Atualiza força do curl noise
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uCurlStrength.value = particleCurlStrength;
+    });
+  }, [particleCurlStrength]);
+
+  // 🌪️ Atualiza força do burst (emissão inicial)
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uBurstStrength.value = particleBurstStrength;
+    });
+  }, [particleBurstStrength]);
+
+  // 🌪️ Atualiza tempo de estabilização do burst
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.material.uniforms.uSettleTime.value = particleSettleTime;
+    });
+  }, [particleSettleTime]);
+
+  // 🔍 DEBUG: Toggle edge texture visualization
+  useEffect(() => {
+    if (debugEdgeTexture) {
+      // Encontra o primeiro sistema de partículas e visualiza sua edge texture
+      const firstKey = particleSystemsRef.current.keys().next().value;
+      if (firstKey) {
+        debugRenderEdgeTexture(firstKey, true);
+      } else {
+        console.warn('⚠️ Nenhum sistema de partículas ativo para debug');
+      }
+    } else {
+      // Remove visualização debug
+      const firstKey = particleSystemsRef.current.keys().next().value;
+      if (firstKey) {
+        debugRenderEdgeTexture(firstKey, false);
+      }
+    }
+  }, [debugEdgeTexture]);
+
   // Função para atualizar a posição de um objeto com smooth transition
   const updateObjectPosition = (objectName: string, axis: 'x' | 'y' | 'z', value: number) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
@@ -433,8 +803,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           if (mesh.isMesh && mesh.material) {
             const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
             materials.forEach((mat) => {
-              if (mat && (mat as any).uniforms && (mat as any).uniforms.uAlpha) {
-                (mat as any).uniforms.uAlpha.value = objData.opacity;
+              const matWithUniforms = mat as THREE.Material & { uniforms?: Record<string, { value: number }> };
+              if (mat && matWithUniforms.uniforms && matWithUniforms.uniforms.uAlpha) {
+                matWithUniforms.uniforms.uAlpha.value = objData.opacity;
               }
             });
           }
@@ -684,9 +1055,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const applyEquirectangularShaderToGLB = (mesh: THREE.Mesh, objectName: string, hdriTexture: THREE.Texture) => {
     // Armazena o side original do material antes de mudar
     const originalMaterial = mesh.material;
-    let originalSide = THREE.DoubleSide;
+    let originalSide: THREE.Side = THREE.DoubleSide;
     if (originalMaterial && !Array.isArray(originalMaterial)) {
-      originalSide = (originalMaterial as any).side || THREE.DoubleSide;
+      const matWithSide = originalMaterial as THREE.Material & { side?: THREE.Side };
+      if (matWithSide.side !== undefined) {
+        originalSide = matWithSide.side;
+      }
     }
     equirectOriginalSidesRef.current.set(objectName, originalSide);
 
@@ -699,6 +1073,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         uFresnelPower: { value: equirectFresnelPower },
         uReflectionStrength: { value: equirectReflectionStrength },
         uUseMetal: { value: equirectUseMetal ? 1.0 : 0.0 },
+        uTime: { value: 0.0 },
       },
       vertexShader: equirectangularReflectionVertexShader,
       fragmentShader: equirectangularReflectionFragmentShader,
@@ -709,7 +1084,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
     mesh.material = equirectMaterial;
     equirectGLBsRef.current.set(objectName, equirectMaterial);
-    console.log(`🌐 Shader Equirectangular aplicado (backface culling ativo): ${objectName}`);
+    console.log(`🌐 Shader Equirectangular + Black Hole Effect aplicado: ${objectName}`);
   };
 
   // 🌐 Função para remover shader equirectangular e restaurar material original
@@ -732,7 +1107,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     mesh.material = defaultMaterial;
     equirectGLBsRef.current.delete(objectName);
     equirectOriginalSidesRef.current.delete(objectName);
-    console.log(`🔲 Shader equirectangular removido (side restaurado): ${objectName}`);
+    console.log(`🔲 Shader equirectangular + Black Hole Effect removido (side restaurado): ${objectName}`);
   };
 
   // 🌐 Função para toggle do shader equirectangular
@@ -765,6 +1140,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         applyEquirectangularShaderToGLB(mesh, objectName, bgTexture);
         setEquirectGLBs(prev => new Set([...prev, objectName]));
         console.log(`✅ Background texture usado como mapa de reflexão: ${objectName}`);
+        
+        // 🌪️ Inicia partículas se habilitado
+        if (particlesEnabled && rendererRef.current && mesh) {
+          initializeParticleSystem(mesh, objectName, rendererRef.current);
+        }
       } else if (!equirectHDRIRef.current) {
         // Fallback: se não tem background, tenta carregar um HDRI padrão
         const textureLoader = new THREE.TextureLoader();
@@ -778,6 +1158,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             }
             setEquirectGLBs(prev => new Set([...prev, objectName]));
             console.log(`✅ HDRI padrão carregado e shader aplicado: ${objectName}`);
+            
+            // 🌪️ Inicia partículas após shader ser aplicado
+            if (particlesEnabled && rendererRef.current && mesh) {
+              initializeParticleSystem(mesh, objectName, rendererRef.current);
+            }
           },
           undefined,
           () => {
@@ -797,19 +1182,227 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               applyEquirectangularShaderToGLB(mesh, objectName, texture);
             }
             setEquirectGLBs(prev => new Set([...prev, objectName]));
+            
+            // 🌪️ Inicia partículas após shader ser aplicado
+            if (particlesEnabled && rendererRef.current && mesh) {
+              initializeParticleSystem(mesh, objectName, rendererRef.current);
+            }
           }
         );
       } else {
         applyEquirectangularShaderToGLB(mesh, objectName, equirectHDRIRef.current);
         setEquirectGLBs(prev => new Set([...prev, objectName]));
+        
+        // 🌪️ Inicia partículas se habilitado
+        if (particlesEnabled && rendererRef.current && mesh) {
+          initializeParticleSystem(mesh, objectName, rendererRef.current);
+        }
       }
     } else {
       removeEquirectangularShaderFromGLB(mesh, objectName);
+      removeParticleSystem(objectName); // Remove partículas quando desabilita shader
       setEquirectGLBs(prev => {
         const next = new Set(prev);
         next.delete(objectName);
         return next;
       });
+    }
+  };
+
+  // 🌪️ Função para inicializar sistema de partículas para um objeto equirectangular
+  const initializeParticleSystem = async (mesh: THREE.Mesh, objectName: string, renderer: THREE.WebGLRenderer) => {
+    if (!particlesEnabled) return;
+
+    try {
+      // Dimensões do render target
+      const width = 1024;
+      const height = 1024;
+
+      // 1️⃣ MASK PASS - Renderiza silhueta branca
+      const maskTarget = new THREE.WebGLRenderTarget(width, height);
+      const maskScene = new THREE.Scene();
+      maskScene.background = new THREE.Color(0x000000);
+
+      const maskMaterial = new THREE.ShaderMaterial({
+        vertexShader: particleMaskVertexShader,
+        fragmentShader: particleMaskFragmentShader,
+      });
+
+      // Clona o mesh para renderizar na mask
+      const maskMesh = mesh.clone();
+      maskMesh.material = maskMaterial;
+      maskScene.add(maskMesh);
+
+      // Renderiza mask com câmera melhor posicionada
+      const box = new THREE.Box3().setFromObject(maskMesh);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fov = 75;
+      const distance = maxDim / (2 * Math.tan((fov * Math.PI) / 360));
+
+      const originalCamera = new THREE.PerspectiveCamera(fov, width / height, 0.1, 1000);
+      originalCamera.position.copy(center);
+      originalCamera.position.z += distance * 1.5; // Um pouco mais afastado
+      originalCamera.lookAt(center);
+
+      console.log(`📐 Mask Pass - Camera dist: ${distance.toFixed(2)}, Size: ${maxDim.toFixed(2)}`);
+
+      renderer.setRenderTarget(maskTarget);
+      renderer.clear(true, true, true);
+      renderer.render(maskScene, originalCamera);
+      renderer.setRenderTarget(null);
+
+      console.log(`✅ Mask Pass completa: ${objectName}`);
+
+      // 2️⃣ EDGE DETECTION PASS
+      const edgeTarget = new THREE.WebGLRenderTarget(width, height);
+      const edgeScene = new THREE.Scene();
+      edgeScene.background = new THREE.Color(0x000000);
+
+      const edgeMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          tMask: { value: maskTarget.texture },
+          resolution: { value: new THREE.Vector2(width, height) },
+        },
+        vertexShader: particleEdgeVertexShader,
+        fragmentShader: particleEdgeFragmentShader,
+      });
+
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), edgeMaterial);
+      edgeScene.add(quad);
+
+      const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+      renderer.setRenderTarget(edgeTarget);
+      renderer.render(edgeScene, orthoCamera);
+      renderer.setRenderTarget(null);
+
+      console.log(`✅ Edge Detection Pass completa: ${objectName}`);
+
+      // 3️⃣ PARTICLE PASS - Cria sistema de partículas
+      const particleCount = Math.floor(2048 * particleDensity);
+      const geometry = new THREE.BufferGeometry();
+
+      // Atributos: seed (UV aleatório) e life (offset para ciclo)
+      const seeds = new Float32Array(particleCount * 2);
+      const lives = new Float32Array(particleCount);
+      const positions = new Float32Array(particleCount * 3); // Position attribute
+
+      for (let i = 0; i < particleCount; i++) {
+        seeds[i * 2] = Math.random();      // x UV
+        seeds[i * 2 + 1] = Math.random();  // y UV
+        lives[i] = Math.random();          // offset de fase
+        
+        // Posições iniciais no center (0, 0, 0) - shader vai mover elas
+        positions[i * 3] = 0.0;
+        positions[i * 3 + 1] = 0.0;
+        positions[i * 3 + 2] = 0.0;
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 2));
+      geometry.setAttribute('aLife', new THREE.BufferAttribute(lives, 1));
+
+      const particleMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+          tEdge: { value: edgeTarget.texture },
+          uTime: { value: 0.0 },
+          uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+          uParticleDensity: { value: particleDensity },
+          uVortexStrength: { value: particleVortexStrength },
+          uCurlStrength: { value: particleCurlStrength },
+          uParticleSpeed: { value: particleSpeed },
+          uBurstStrength: { value: particleBurstStrength },
+          uSettleTime: { value: particleSettleTime },
+        },
+        vertexShader: particleVertexShader,
+        fragmentShader: particleFragmentShader,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        transparent: true,
+      });
+
+      const points = new THREE.Points(geometry, particleMaterial);
+      if (sceneRef.current) {
+        sceneRef.current.add(points);
+      }
+
+      particleSystemsRef.current.set(objectName, {
+        mask: maskTarget,
+        edge: edgeTarget,
+        material: particleMaterial,
+        geometry: geometry,
+        points: points,
+      });
+
+      console.log(`🌪️ Sistema de partículas inicializado: ${objectName}`);
+      console.log(`   - Partículas: ${particleCount}`);
+      console.log(`   - Posição na cena: ${points.position.toArray()}`);
+      console.log(`   - Visible: ${points.visible}`);
+      console.log(`   - Edge texture: ${edgeTarget.texture ? '✅ Carregada' : '❌ Não carregada'}`);
+    } catch (error) {
+      console.error(`❌ Erro ao inicializar sistema de partículas: ${objectName}`, error);
+    }
+  };
+
+  // 🌪️ Função para limpar sistema de partículas
+  const removeParticleSystem = (objectName: string) => {
+    const system = particleSystemsRef.current.get(objectName);
+    if (system) {
+      // Limpa GPU memory
+      system.mask.dispose();
+      system.edge.dispose();
+      system.geometry.dispose();
+      system.material.dispose();
+
+      // Remove da cena
+      if (sceneRef.current) {
+        sceneRef.current.remove(system.points);
+      }
+
+      particleSystemsRef.current.delete(objectName);
+      console.log(`🗑️ Sistema de partículas removido: ${objectName}`);
+    }
+  };
+
+  // 🔍 DEBUG: Renderiza edge texture para visualizar
+  const debugRenderEdgeTexture = (objectName: string, showDebug: boolean) => {
+    const system = particleSystemsRef.current.get(objectName);
+    if (!system || !rendererRef.current || !sceneRef.current) {
+      console.error('❌ Sistema de partículas ou renderer não encontrado');
+      return;
+    }
+
+    if (showDebug) {
+      // Remove debug anterior se existir
+      const existingDebugMesh = sceneRef.current.getObjectByName(`__debug_edge_${objectName}`);
+      if (existingDebugMesh) {
+        sceneRef.current.remove(existingDebugMesh);
+      }
+
+      // Cria uma geometria grande na frente da câmera com a edge texture
+      const debugGeometry = new THREE.PlaneGeometry(20, 20);
+      const debugMaterial = new THREE.MeshBasicMaterial({
+        map: system.edge.texture,
+        side: THREE.FrontSide,
+      });
+      const debugMesh = new THREE.Mesh(debugGeometry, debugMaterial);
+      debugMesh.name = `__debug_edge_${objectName}`;
+      debugMesh.position.z = -10; // Bem perto da câmera
+      
+      sceneRef.current.add(debugMesh);
+      console.log(`🔍 DEBUG: Edge texture renderizada para ${objectName}`);
+      console.log(`   - Edge texture size: 1024x1024`);
+      console.log(`   - Se estiver PRETA: mask pass falhou`);
+      console.log(`   - Se estiver BRANCA: edge detection falhou`);
+      console.log(`   - Se tiver CONTORNOS BRANCOS: sucesso! Partículas devem aparecer`);
+    } else {
+      // Remove debug mesh
+      const debugMesh = sceneRef.current.getObjectByName(`__debug_edge_${objectName}`);
+      if (debugMesh) {
+        sceneRef.current.remove(debugMesh);
+        console.log(`🔲 Debug: Edge texture removida`);
+      }
     }
   };
 
@@ -1468,6 +2061,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         renderer.toneMapping = THREE.ACESFilmicToneMapping; // Tone mapping para melhor iluminação
         renderer.toneMappingExposure = 1.0; // Exposição
         containerRef.current.appendChild(renderer.domElement);
+        rendererRef.current = renderer; // 🌪️ Armazena referência ao renderer para partículas
         
         // Garante que o canvas fique sobre o vídeo mas com fundo transparente
         renderer.domElement.style.position = 'absolute';
@@ -1798,6 +2392,31 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           
           // Renderiza a cena com post-processing (vignette)
           composer.render();
+
+          // 🔍 DEBUG: Renderiza edge texture se ativado
+          if (debugEdgeTexture && particleSystemsRef.current.size > 0) {
+            // Pega o primeiro sistema de partículas para debug
+            const firstSystem = Array.from(particleSystemsRef.current.values())[0];
+            if (firstSystem && firstSystem.edge) {
+              // Renderiza edge texture em fullscreen para visualizar
+              const debugScene = new THREE.Scene();
+              const debugMaterial = new THREE.MeshBasicMaterial({
+                map: firstSystem.edge.texture,
+                side: THREE.DoubleSide,
+              });
+              const debugQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), debugMaterial);
+              debugScene.add(debugQuad);
+              
+              const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+              renderer.setRenderTarget(null);
+              renderer.clear(true, true, true);
+              renderer.render(debugScene, orthoCamera);
+              
+              // Limpa temp objects
+              debugMaterial.dispose();
+              debugQuad.geometry.dispose();
+            }
+          }
           
           // Atualiza debug info constantemente
           const direction = new THREE.Vector3();
@@ -2534,6 +3153,161 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                       className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 🌪️ Particle System Controls */}
+        {equirectGLBs.size > 0 && (
+          <div className="mb-3 border-b border-white/20 pb-2">
+            <p className="font-semibold text-purple-400 mb-2">🌪️ PARTÍCULAS (GPU Curl Noise):</p>
+            <div className="space-y-2">
+              {/* Checkbox para habilitar/desabilitar partículas */}
+              <div className="flex items-center gap-2 mb-2 p-2 bg-gray-700 rounded">
+                <input
+                  type="checkbox"
+                  id="enableParticles"
+                  checked={particlesEnabled}
+                  onChange={e => setParticlesEnabled(e.target.checked)}
+                  className="w-4 h-4 cursor-pointer"
+                />
+                <label htmlFor="enableParticles" className="text-[9px] text-gray-300 cursor-pointer flex-1">
+                  {particlesEnabled ? '✅ Partículas Ativas' : '❌ Partículas Desativadas'}
+                </label>
+              </div>
+
+              {particlesEnabled && (
+                <>
+                  {/* Densidade de partículas */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      💫 Densidade: {particleDensity.toFixed(2)}x ({Math.floor(2048 * particleDensity)} partículas)
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.1"
+                      value={particleDensity}
+                      onChange={e => setParticleDensity(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Velocidade das partículas */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      ⚡ Velocidade: {particleSpeed.toFixed(2)}x
+                    </label>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="1.5"
+                      step="0.05"
+                      value={particleSpeed}
+                      onChange={e => setParticleSpeed(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Força do vórtice */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      🌀 Força Vórtice: {particleVortexStrength.toFixed(2)}x
+                    </label>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="2.0"
+                      step="0.1"
+                      value={particleVortexStrength}
+                      onChange={e => setParticleVortexStrength(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Força do curl noise */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      🌪️ Força Curl: {particleCurlStrength.toFixed(2)}x
+                    </label>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="2.0"
+                      step="0.1"
+                      value={particleCurlStrength}
+                      onChange={e => setParticleCurlStrength(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Tamanho das partículas */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      📏 Tamanho: {particleSize.toFixed(2)}x
+                    </label>
+                    <input
+                      type="range"
+                      min="0.3"
+                      max="2.0"
+                      step="0.1"
+                      value={particleSize}
+                      onChange={e => setParticleSize(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Força do Burst (emissão inicial) */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      💥 Força Burst: {particleBurstStrength.toFixed(2)}x
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="5.0"
+                      step="0.1"
+                      value={particleBurstStrength}
+                      onChange={e => setParticleBurstStrength(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Tempo de estabilização */}
+                  <div>
+                    <label className="text-[9px] text-gray-300 mb-1 block">
+                      ⏱️ Tempo Settle: {particleSettleTime.toFixed(2)}s
+                    </label>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="3.0"
+                      step="0.1"
+                      value={particleSettleTime}
+                      onChange={e => setParticleSettleTime(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Info */}
+                  <div className="text-[7px] text-gray-500 p-1 bg-gray-800 rounded">
+                    ✨ GPU-accelerated | Screen-space edges | Curl Noise + Vortex Field | Burst → Steady Emission
+                  </div>
+
+                  {/* Debug: Visualize Edge Texture */}
+                  <button
+                    onClick={() => setDebugEdgeTexture(!debugEdgeTexture)}
+                    className={`w-full text-[8px] py-1 rounded font-semibold transition ${
+                      debugEdgeTexture
+                        ? 'bg-cyan-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    {debugEdgeTexture ? '🔍 Debug: Mostrando Edge Texture' : '👁️ Debug: Ver Edge Texture'}
+                  </button>
                 </>
               )}
             </div>

@@ -1,0 +1,236 @@
+{
+  "version": "1.0.0",
+  "exportDate": "2026-02-03T14:25:30.000Z",
+  "camera": {
+    "type": "PerspectiveCamera",
+    "position": {
+      "x": 0,
+      "y": 0,
+      "z": 8
+    },
+    "rotation": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "fov": 75,
+    "aspect": 1.778,
+    "near": 0.1,
+    "far": 1000,
+    "lookAt": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "isAR": false
+  },
+  "lights": {
+    "ambient": {
+      "intensity": 1.5,
+      "color": "#ffffff"
+    },
+    "point": {
+      "intensity": 2,
+      "color": "#ffffff",
+      "position": {
+        "x": 10,
+        "y": 10,
+        "z": 10
+      }
+    },
+    "directional": {
+      "intensity": 1.5,
+      "color": "#ffffff",
+      "position": {
+        "x": 5,
+        "y": 5,
+        "z": 5
+      }
+    }
+  },
+  "environment": {
+    "backgroundTexture": "/textures/Rotunda/Rotunda.json",
+    "backgroundEnabled": true,
+    "bloom": {
+      "enabled": true,
+      "intensity": 1.5,
+      "threshold": 0.2
+    },
+    "vignette": {
+      "offset": 1.1,
+      "darkness": 1.3
+    },
+    "toneMapping": "ACESFilmic",
+    "toneMappingExposure": 1
+  },
+  "objects": [
+    {
+      "name": "helmet.glb",
+      "type": "glb",
+      "filePath": "/models/helmet.glb",
+      "position": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "rotation": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "scale": {
+        "x": 1,
+        "y": 1,
+        "z": 1
+      },
+      "visible": true,
+      "opacity": 1,
+      "shader": {
+        "type": "equirectangularReflection",
+        "uniforms": {
+          "uBrightness": 1,
+          "uFresnelPower": 5,
+          "uMetalness": 1,
+          "uMetalColor": {
+            "r": 1,
+            "g": 0.8470588235294118,
+            "b": 0.5490196078431373
+          },
+          "uUseMetal": true,
+          "uReflectionStrength": 1,
+          "uHologramEnabled": false,
+          "uHologramIntensity": 0.03,
+          "uHologramFrequency": 20,
+          "uHologramSpeed": 2,
+          "uFeatherEnabled": false,
+          "uFeatherRadius": 0.7,
+          "uFeatherSoftness": 0.2,
+          "uBlackHoleEnabled": true,
+          "uBlackHoleDarkColor": {
+            "r": 0.00392156862745098,
+            "g": 0,
+            "b": 0.011764705882352941
+          },
+          "uBlackHoleBrightColor": {
+            "r": 0.9019607843137255,
+            "g": 0.6,
+            "b": 1.2
+          },
+          "uBlackHoleIntensity": 0.3
+        }
+      },
+      "material": {
+        "type": "MeshStandardMaterial",
+        "properties": {
+          "color": "#ffffff",
+          "metalness": 0.5,
+          "roughness": 0.5,
+          "emissive": "#000000",
+          "emissiveIntensity": 0
+        }
+      },
+      "particleSystem": {
+        "enabled": true,
+        "density": 1,
+        "speed": 0.8,
+        "vortexStrength": 1,
+        "curlStrength": 1,
+        "size": 1,
+        "burstStrength": 3,
+        "settleTime": 1.5,
+        "attractorStrength": 0,
+        "orbitDistance": 1.2,
+        "orbitSpeed": 1,
+        "followCamera": true
+      }
+    },
+    {
+      "name": "scene.ply",
+      "type": "ply",
+      "filePath": "/models/scene.ply",
+      "position": {
+        "x": 2,
+        "y": 0,
+        "z": 0
+      },
+      "rotation": {
+        "x": 90,
+        "y": 180,
+        "z": 0
+      },
+      "scale": {
+        "x": 0.5,
+        "y": 0.5,
+        "z": 0.5
+      },
+      "visible": true,
+      "opacity": 0.8,
+      "shader": {
+        "type": "plyCustomShader",
+        "uniforms": {
+          "uOpacity": 0.8,
+          "uBrightness": 1,
+          "uPointSize": 2
+        }
+      }
+    }
+  ],
+  "shaders": {
+    "equirectangularReflection": {
+      "enabled": true,
+      "appliedToObjects": [
+        "helmet.glb"
+      ],
+      "fresnelPower": 5,
+      "brightness": 1,
+      "metalness": 1,
+      "metalColor": {
+        "r": 1,
+        "g": 0.8470588235294118,
+        "b": 0.5490196078431373
+      },
+      "useMetal": true,
+      "reflectionStrength": 1,
+      "hologram": {
+        "enabled": false,
+        "intensity": 0.03,
+        "frequency": 20,
+        "speed": 2
+      },
+      "feather": {
+        "enabled": false,
+        "radius": 0.7,
+        "softness": 0.2
+      },
+      "blackHole": {
+        "enabled": true,
+        "darkColor": {
+          "r": 0.00392156862745098,
+          "g": 0,
+          "b": 0.011764705882352941
+        },
+        "brightColor": {
+          "r": 0.9019607843137255,
+          "g": 0.6,
+          "b": 1.2
+        },
+        "intensity": 0.3
+      }
+    }
+  },
+  "particles": {
+    "globalEnabled": true,
+    "density": 1,
+    "speed": 0.8,
+    "vortexStrength": 1,
+    "curlStrength": 1,
+    "size": 1,
+    "burstStrength": 3,
+    "settleTime": 1.5,
+    "attractorStrength": 0,
+    "orbitDistance": 1.2,
+    "orbitSpeed": 1,
+    "followCamera": true,
+    "debugEdgeTexture": false
+  }
+}

@@ -54,6 +54,19 @@ Aplicação Next.js com three.js que permite visualizar **Gaussian Splatting e o
   - `.glb` - Modelos 3D (GLTF Binary)
 - Carregamento assíncrono com progress feedback
 
+### 📤 Export System
+- **Export to JSON**: Exporta toda configuração da cena
+  - Objetos 3D (posição, rotação, escala, visibilidade)
+  - Câmera (posição, rotação, FOV, tipo AR/Principal)
+  - Luzes (ambient, point, directional)
+  - Environment (bloom, vignette, background)
+  - Shaders aplicados aos objetos
+  - Sistema de partículas (configurações globais e por objeto)
+  - Metadados (versão, data de exportação)
+- **Botão dedicado**: "📦 Exportar JSON" na interface principal
+- **Auto-download**: Arquivo JSON baixado automaticamente
+- Ver documentação completa: [EXPORT_SYSTEM.md](./EXPORT_SYSTEM.md)
+
 ## 📁 Estrutura de Arquivos
 
 ```

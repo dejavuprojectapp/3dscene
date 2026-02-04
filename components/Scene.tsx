@@ -84,6 +84,13 @@ const equirectangularReflectionFragmentShader = `
   uniform float uHologramIntensity;   // 0.0 - 0.1 - intensidade da distorção
   uniform float uHologramFrequency;   // 10.0 - 50.0 - frequência das ondas
   uniform float uHologramSpeed;       // 0.5 - 5.0 - velocidade da animação
+  uniform float uFeatherEnabled;      // 0.0 ou 1.0 - toggle do feather
+  uniform float uFeatherRadius;       // 0.0 - 1.0 - raio onde começa o fade
+  uniform float uFeatherSoftness;     // 0.0 - 0.5 - suavidade da transição
+  uniform float uBlackHoleEnabled;    // 0.0 ou 1.0 - toggle do efeito Black Hole
+  uniform vec3 uBlackHoleDarkColor;   // Cor escura das edges
+  uniform vec3 uBlackHoleBrightColor; // Cor brilhante das edges
+  uniform float uBlackHoleIntensity;  // 0.0 - 1.0 - intensidade do overlay
   
   varying vec3 vWorldNormal;
   varying vec3 vViewDir;
@@ -152,41 +159,46 @@ const equirectangularReflectionFragmentShader = `
     N = distortedNormal;
 
     // ===== EFEITO BURACO NEGRO (Black Hole) COM NOISE =====
-    // 1️⃣ EDGE DETECTION - Fresnel com espessura em pixels (fwidth)
-    float edgeFresnel = 1.0 - clamp(dot(N, V), 0.0, 1.0);
-    float edge = smoothstep(0.35, 0.85, edgeFresnel);
-    
-    // Espessura constante em pixels usando fwidth - RESTRITO ÀS EDGES
-    float edgeWidth = fwidth(edge) * 4.0;
-    float edgeMask = smoothstep(0.0, edgeWidth, edge);
-    float edgeRestriction = smoothstep(0.5, 1.0, edge); // Restringe o efeito muito mais para perto das edges
-
-    // 2️⃣ NOISE PROCEDURAL ORGÂNICO
-    // Noise em screen-space para distorção caótica
-    float n = noise(gl_FragCoord.xy * 0.15 + uTime * 0.8);
-    
-    // 3️⃣ WAVE COM NOISE - Padrão mais orgânico
-    float waveNoise = sin(edge * 22.0 + n * 6.283 + uTime * 2.0);
-    
-    // Modula intensidade com chaos do noise
-    float chaos = smoothstep(0.2, 0.8, n);
-    waveNoise *= chaos;
-    
-    // 4️⃣ CURVA DE ENERGIA NÃO-LINEAR
-    // Usa abs() para picos de intensidade + pow() para contraste
-    float energy = abs(waveNoise);
-    energy = pow(energy, 1.4); // Curva exponencial para mais drama
-
-    // 5️⃣ DISTORÇÃO GRAVITACIONAL - Usando energia
     vec3 R = reflect(-V, N);
+    vec3 R_distorted = R;
+    float energy = 0.0;
+    float edgeRestriction = 0.0;
     
-    // Amplitude dinâmica baseada em energia
-    float distortAmount = energy * 0.12; // ~12% de distorção máxima
-    float distortIntensity = edge * energy * 0.6;
-    
-    // Cria direção de distorção radial para dentro
-    vec3 distortDir = normalize(R + N * distortIntensity);
-    vec3 R_distorted = mix(R, distortDir, distortAmount);
+    if (uBlackHoleEnabled > 0.5) {
+      // 1️⃣ EDGE DETECTION - Fresnel com espessura em pixels (fwidth)
+      float edgeFresnel = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+      float edge = smoothstep(0.35, 0.85, edgeFresnel);
+      
+      // Espessura constante em pixels usando fwidth - RESTRITO ÀS EDGES
+      float edgeWidth = fwidth(edge) * 4.0;
+      float edgeMask = smoothstep(0.0, edgeWidth, edge);
+      edgeRestriction = smoothstep(0.5, 1.0, edge); // Restringe o efeito muito mais para perto das edges
+
+      // 2️⃣ NOISE PROCEDURAL ORGÂNICO
+      // Noise em screen-space para distorção caótica
+      float n = noise(gl_FragCoord.xy * 0.15 + uTime * 0.8);
+      
+      // 3️⃣ WAVE COM NOISE - Padrão mais orgânico
+      float waveNoise = sin(edge * 22.0 + n * 6.283 + uTime * 2.0);
+      
+      // Modula intensidade com chaos do noise
+      float chaos = smoothstep(0.2, 0.8, n);
+      waveNoise *= chaos;
+      
+      // 4️⃣ CURVA DE ENERGIA NÃO-LINEAR
+      // Usa abs() para picos de intensidade + pow() para contraste
+      energy = abs(waveNoise);
+      energy = pow(energy, 1.4); // Curva exponencial para mais drama
+
+      // 5️⃣ DISTORÇÃO GRAVITACIONAL - Usando energia
+      // Amplitude dinâmica baseada em energia
+      float distortAmount = energy * 0.12; // ~12% de distorção máxima
+      float distortIntensity = edge * energy * 0.6;
+      
+      // Cria direção de distorção radial para dentro
+      vec3 distortDir = normalize(R + N * distortIntensity);
+      R_distorted = mix(R, distortDir, distortAmount);
+    }
     
     vec3 envColor = texture2D(uEnvMap, equirectangularUV(R_distorted)).rgb;
 
@@ -194,10 +206,8 @@ const equirectangularReflectionFragmentShader = `
     float NdotV = clamp(dot(N, V), 0.0, 1.0);
     float fresnel = pow(1.0 - NdotV, uFresnelPower);
 
-    // 6️⃣ COLOR GRADING COM ENERGY CURVE
-    vec3 darkColor = vec3(0.01, 0.0, 0.03);     // Azul escuro profundo
-    vec3 brightColor = vec3(0.9, 0.6, 1.2);     // Magenta/Rosa brilhante
-    vec3 edgeColor = mix(darkColor, brightColor, energy);
+    // 6️⃣ COLOR GRADING COM ENERGY CURVE - Usa cores customizáveis
+    vec3 edgeColor = mix(uBlackHoleDarkColor, uBlackHoleBrightColor, energy);
 
     vec3 color;
     
@@ -210,18 +220,43 @@ const equirectangularReflectionFragmentShader = `
       color = reflection * mix(0.25, 1.0, fresnel);
       color *= uBrightness;
       
-      // Aplica efeito buraco negro restrito às edges (30% do efeito original)
-      color = mix(color, edgeColor, edgeRestriction * energy * 0.3);
+      // Aplica efeito buraco negro restrito às edges (intensidade customizável)
+      if (uBlackHoleEnabled > 0.5) {
+        color = mix(color, edgeColor, edgeRestriction * energy * uBlackHoleIntensity);
+      }
       
     } else {
       // === MODO REFLEXÃO SIMPLES COM BURACO NEGRO CAÓTICO ===
       color = envColor * mix(0.6, 1.0, fresnel) * uReflectionStrength;
       
-      // Aplica efeito buraco negro restrito às edges (30% do efeito original)
-      color = mix(color, edgeColor, edgeRestriction * energy * 0.3);
+      // Aplica efeito buraco negro restrito às edges (intensidade customizável)
+      if (uBlackHoleEnabled > 0.5) {
+        color = mix(color, edgeColor, edgeRestriction * energy * uBlackHoleIntensity);
+      }
     }
 
-    gl_FragColor = vec4(color, 1.0);
+    // 🌫️ FEATHER EFFECT - Alpha fadeout nas bordas
+    float alpha = 1.0;
+    if (uFeatherEnabled > 0.5) {
+      // Calcula distância do centro usando fresnel (edge detection)
+      float edgeDist = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+      
+      // Também calcula distância radial do centro usando UV (caso tenha UV)
+      vec2 centerUV = vec2(0.5);
+      float uvDist = length(vUv - centerUV) * 2.0; // normaliza para 0-1
+      
+      // Combina ambas as distâncias (prioriza fresnel para melhor edge detection)
+      float combinedDist = mix(edgeDist, uvDist, 0.3);
+      
+      // Aplica smoothstep para criar fadeout suave
+      // Começa a fazer fade no uFeatherRadius e termina em 1.0
+      alpha = smoothstep(1.0, uFeatherRadius, combinedDist);
+      
+      // Aplica softness (controla a suavidade da transição)
+      alpha = pow(alpha, 1.0 / (uFeatherSoftness + 0.1));
+    }
+
+    gl_FragColor = vec4(color, alpha);
   }
 `;
 
@@ -478,6 +513,119 @@ interface PBRMaterialWithShader extends THREE.MeshStandardMaterial {
   __shader?: THREE.WebGLProgramParametersWithUniforms;
 }
 
+// Interface para exportação de dados da cena
+interface SceneExportData {
+  version: string;
+  exportDate: string;
+  camera: {
+    type: 'PerspectiveCamera' | 'OrthographicCamera';
+    position: { x: number; y: number; z: number };
+    rotation: { x: number; y: number; z: number };
+    fov?: number;
+    aspect?: number;
+    near: number;
+    far: number;
+    lookAt: { x: number; y: number; z: number };
+    isAR: boolean;
+  };
+  lights: {
+    ambient: { intensity: number; color: string };
+    point: { intensity: number; color: string; position: { x: number; y: number; z: number } };
+    directional: { intensity: number; color: string; position: { x: number; y: number; z: number } };
+  };
+  environment: {
+    backgroundTexture: string | null;
+    backgroundEnabled: boolean;
+    bloom: {
+      enabled: boolean;
+      intensity: number;
+      threshold: number;
+    };
+    vignette: {
+      offset: number;
+      darkness: number;
+    };
+    toneMapping: string;
+    toneMappingExposure: number;
+  };
+  objects: Array<{
+    name: string;
+    type: 'ply' | 'splat' | 'glb' | 'gltf';
+    filePath: string;
+    position: { x: number; y: number; z: number };
+    rotation: { x: number; y: number; z: number };
+    scale: { x: number; y: number; z: number };
+    visible: boolean;
+    opacity: number;
+    shader?: {
+      type: string;
+      uniforms?: Record<string, any>;
+    };
+    material?: {
+      type: string;
+      properties: Record<string, any>;
+    };
+    particleSystem?: {
+      enabled: boolean;
+      density: number;
+      speed: number;
+      vortexStrength: number;
+      curlStrength: number;
+      size: number;
+      burstStrength: number;
+      settleTime: number;
+      attractorStrength: number;
+      orbitDistance: number;
+      orbitSpeed: number;
+      followCamera: boolean;
+    };
+  }>;
+  shaders: {
+    equirectangularReflection: {
+      enabled: boolean;
+      appliedToObjects: string[];
+      fresnelPower: number;
+      brightness: number;
+      metalness: number;
+      metalColor: { r: number; g: number; b: number };
+      useMetal: boolean;
+      reflectionStrength: number;
+      hologram: {
+        enabled: boolean;
+        intensity: number;
+        frequency: number;
+        speed: number;
+      };
+      feather: {
+        enabled: boolean;
+        radius: number;
+        softness: number;
+      };
+      blackHole: {
+        enabled: boolean;
+        darkColor: { r: number; g: number; b: number };
+        brightColor: { r: number; g: number; b: number };
+        intensity: number;
+      };
+    };
+  };
+  particles: {
+    globalEnabled: boolean;
+    density: number;
+    speed: number;
+    vortexStrength: number;
+    curlStrength: number;
+    size: number;
+    burstStrength: number;
+    settleTime: number;
+    attractorStrength: number;
+    orbitDistance: number;
+    orbitSpeed: number;
+    followCamera: boolean;
+    debugEdgeTexture: boolean;
+  };
+}
+
 
 export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -562,6 +710,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [hologramIntensity, setHologramIntensity] = useState(0.03); // 0.0 - 0.1
   const [hologramFrequency, setHologramFrequency] = useState(20.0); // 10.0 - 50.0
   const [hologramSpeed, setHologramSpeed] = useState(2.0); // 0.5 - 5.0
+  const [featherEnabled, setFeatherEnabled] = useState(false); // Toggle do feather edge
+  const [featherRadius, setFeatherRadius] = useState(0.7); // 0.0 - 1.0 - onde começa o fade
+  const [featherSoftness, setFeatherSoftness] = useState(0.2); // 0.0 - 0.5 - suavidade
+  const [blackHoleEnabled, setBlackHoleEnabled] = useState(true); // Toggle do Black Hole effect
+  const [blackHoleDarkColor, setBlackHoleDarkColor] = useState(new THREE.Color(0.01, 0.0, 0.03)); // Cor escura
+  const [blackHoleBrightColor, setBlackHoleBrightColor] = useState(new THREE.Color(0.9, 0.6, 1.2)); // Cor brilhante
+  const [blackHoleIntensity, setBlackHoleIntensity] = useState(0.3); // 0.0 - 1.0
 
   // 🎨 Referências para materiais PBR dos GLBs (MeshStandardMaterial com onBeforeCompile)
   const glbPbrMaterialsRef = useRef<Map<string, PBRMaterialWithShader>>(new Map());
@@ -722,7 +877,58 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     });
   }, [hologramSpeed]);
 
-  // 🌐 Atualiza Time do shader equirectangular + Particle systems (para animação de onda)
+  // �️ Atualiza Feather Enabled
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uFeatherEnabled.value = featherEnabled ? 1.0 : 0.0;
+      // Atualiza transparent baseado no feather
+      material.transparent = featherEnabled;
+      material.needsUpdate = true;
+    });
+  }, [featherEnabled]);
+
+  // 🌫️ Atualiza Feather Radius
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uFeatherRadius.value = featherRadius;
+    });
+  }, [featherRadius]);
+
+  // 🌫️ Atualiza Feather Softness
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uFeatherSoftness.value = featherSoftness;
+    });
+  }, [featherSoftness]);
+
+  // 🌀 Atualiza Black Hole Enabled
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBlackHoleEnabled.value = blackHoleEnabled ? 1.0 : 0.0;
+    });
+  }, [blackHoleEnabled]);
+
+  // 🌀 Atualiza Black Hole Dark Color
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBlackHoleDarkColor.value = blackHoleDarkColor.clone();
+    });
+  }, [blackHoleDarkColor]);
+
+  // 🌀 Atualiza Black Hole Bright Color
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBlackHoleBrightColor.value = blackHoleBrightColor.clone();
+    });
+  }, [blackHoleBrightColor]);
+
+  // 🌀 Atualiza Black Hole Intensity
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBlackHoleIntensity.value = blackHoleIntensity;
+    });
+  }, [blackHoleIntensity]);
+  // �🌐 Atualiza Time do shader equirectangular + Particle systems (para animação de onda)
   useEffect(() => {
     let animationFrameId: number;
     const startTime = performance.now();
@@ -1189,10 +1395,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         uHologramIntensity: { value: hologramIntensity },
         uHologramFrequency: { value: hologramFrequency },
         uHologramSpeed: { value: hologramSpeed },
+        uFeatherEnabled: { value: featherEnabled ? 1.0 : 0.0 },
+        uFeatherRadius: { value: featherRadius },
+        uFeatherSoftness: { value: featherSoftness },
+        uBlackHoleEnabled: { value: blackHoleEnabled ? 1.0 : 0.0 },
+        uBlackHoleDarkColor: { value: blackHoleDarkColor.clone() },
+        uBlackHoleBrightColor: { value: blackHoleBrightColor.clone() },
+        uBlackHoleIntensity: { value: blackHoleIntensity },
       },
       vertexShader: equirectangularReflectionVertexShader,
       fragmentShader: equirectangularReflectionFragmentShader,
       side: THREE.FrontSide,
+      transparent: featherEnabled,
       depthWrite: true,
       depthTest: true,
     });
@@ -1630,6 +1844,305 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const deleteSavedCamera = (id: number) => {
     setSavedCameras(savedCameras.filter(cam => cam.id !== id));
     console.log('🗑️ Câmera deletada:', id);
+  };
+
+  // 📦 Função para exportar cena completa para JSON
+  const exportSceneToJSON = () => {
+    if (!activeCameraRef.current || !sceneRef.current) {
+      console.error('❌ Cena não inicializada');
+      return;
+    }
+
+    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
+    
+    // Helper para extrair tipo de arquivo
+    const getFileType = (path: string): 'ply' | 'splat' | 'glb' | 'gltf' => {
+      const ext = path.toLowerCase().split('.').pop();
+      if (ext === 'ply') return 'ply';
+      if (ext === 'splat') return 'splat';
+      if (ext === 'glb') return 'glb';
+      return 'gltf';
+    };
+
+    // Helper para extrair propriedades de shader
+    const getShaderProperties = (object: THREE.Object3D, name: string) => {
+      const fileType = getFileType(name);
+      const result: any = {};
+
+      if (fileType === 'ply' || fileType === 'splat') {
+        // PLY/SPLAT usa ShaderMaterial custom
+        const points = object as THREE.Points;
+        const material = points.material as THREE.ShaderMaterial;
+        if (material.uniforms) {
+          result.type = 'plyCustomShader';
+          result.uniforms = {
+            uOpacity: material.uniforms.uOpacity?.value ?? 1.0,
+            uBrightness: material.uniforms.uBrightness?.value ?? 1.0,
+            uPointSize: material.uniforms.uPointSize?.value ?? 2.0,
+          };
+        }
+      } else if (fileType === 'glb' || fileType === 'gltf') {
+        // GLB pode ter shader equirectangular OU PBR
+        const hasEquirect = equirectGLBsRef.current.has(name);
+        if (hasEquirect) {
+          result.type = 'equirectangularReflection';
+          result.uniforms = {
+            uBrightness: equirectBrightness,
+            uFresnelPower: equirectFresnelPower,
+            uMetalness: equirectMetalness,
+            uMetalColor: {
+              r: equirectMetalColor.r,
+              g: equirectMetalColor.g,
+              b: equirectMetalColor.b,
+            },
+            uUseMetal: equirectUseMetal,
+            uReflectionStrength: equirectReflectionStrength,
+            uHologramEnabled: hologramEnabled,
+            uHologramIntensity: hologramIntensity,
+            uHologramFrequency: hologramFrequency,
+            uHologramSpeed: hologramSpeed,
+            uFeatherEnabled: featherEnabled,
+            uFeatherRadius: featherRadius,
+            uFeatherSoftness: featherSoftness,
+            uBlackHoleEnabled: blackHoleEnabled,
+            uBlackHoleDarkColor: {
+              r: blackHoleDarkColor.r,
+              g: blackHoleDarkColor.g,
+              b: blackHoleDarkColor.b,
+            },
+            uBlackHoleBrightColor: {
+              r: blackHoleBrightColor.r,
+              g: blackHoleBrightColor.g,
+              b: blackHoleBrightColor.b,
+            },
+            uBlackHoleIntensity: blackHoleIntensity,
+          };
+        } else {
+          // PBR shader (MeshStandardMaterial)
+          result.type = 'pbr';
+        }
+      }
+
+      return Object.keys(result).length > 0 ? result : undefined;
+    };
+
+    // Helper para extrair propriedades de material
+    const getMaterialProperties = (object: THREE.Object3D, name: string) => {
+      const fileType = getFileType(name);
+      const result: any = {};
+
+      if (fileType === 'glb' || fileType === 'gltf') {
+        let material: THREE.Material | undefined;
+        object.traverse((child) => {
+          const mesh = child as THREE.Mesh;
+          if (mesh.isMesh && mesh.material && !material) {
+            material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+          }
+        });
+
+        if (material) {
+          result.type = material.type;
+          if (material instanceof THREE.MeshStandardMaterial) {
+            result.properties = {
+              color: `#${material.color.getHexString()}`,
+              metalness: material.metalness,
+              roughness: material.roughness,
+              emissive: `#${material.emissive.getHexString()}`,
+              emissiveIntensity: material.emissiveIntensity,
+            };
+          }
+        }
+      }
+
+      return Object.keys(result).length > 0 ? result : undefined;
+    };
+
+    // Coleta objetos da cena
+    const objects = sceneObjectsRef.current.map((obj) => {
+      const hasParticles = particleSystemsRef.current.has(obj.name);
+      
+      // Encontra o caminho original do arquivo
+      const originalPath = modelPaths.find(path => path.endsWith(obj.name)) || obj.name;
+
+      return {
+        name: obj.name,
+        type: getFileType(obj.name),
+        filePath: originalPath,
+        position: {
+          x: parseFloat(obj.object.position.x.toFixed(3)),
+          y: parseFloat(obj.object.position.y.toFixed(3)),
+          z: parseFloat(obj.object.position.z.toFixed(3)),
+        },
+        rotation: {
+          x: parseFloat((obj.object.rotation.x * 180 / Math.PI).toFixed(2)),
+          y: parseFloat((obj.object.rotation.y * 180 / Math.PI).toFixed(2)),
+          z: parseFloat((obj.object.rotation.z * 180 / Math.PI).toFixed(2)),
+        },
+        scale: {
+          x: parseFloat(obj.object.scale.x.toFixed(3)),
+          y: parseFloat(obj.object.scale.y.toFixed(3)),
+          z: parseFloat(obj.object.scale.z.toFixed(3)),
+        },
+        visible: obj.visible,
+        opacity: obj.opacity,
+        shader: getShaderProperties(obj.object, obj.name),
+        material: getMaterialProperties(obj.object, obj.name),
+        particleSystem: hasParticles ? {
+          enabled: particlesEnabled,
+          density: particleDensity,
+          speed: particleSpeed,
+          vortexStrength: particleVortexStrength,
+          curlStrength: particleCurlStrength,
+          size: particleSize,
+          burstStrength: particleBurstStrength,
+          settleTime: particleSettleTime,
+          attractorStrength: particleAttractorStrength,
+          orbitDistance: particleOrbitDistance,
+          orbitSpeed: particleOrbitSpeed,
+          followCamera: particleFollowCamera,
+        } : undefined,
+      };
+    });
+
+    // Monta objeto de exportação
+    const exportData: SceneExportData = {
+      version: '1.0.0',
+      exportDate: new Date().toISOString(),
+      camera: {
+        type: 'PerspectiveCamera',
+        position: {
+          x: parseFloat(camera.position.x.toFixed(3)),
+          y: parseFloat(camera.position.y.toFixed(3)),
+          z: parseFloat(camera.position.z.toFixed(3)),
+        },
+        rotation: {
+          x: parseFloat((camera.rotation.x * 180 / Math.PI).toFixed(2)),
+          y: parseFloat((camera.rotation.y * 180 / Math.PI).toFixed(2)),
+          z: parseFloat((camera.rotation.z * 180 / Math.PI).toFixed(2)),
+        },
+        fov: camera.fov,
+        aspect: camera.aspect,
+        near: camera.near,
+        far: camera.far,
+        lookAt: {
+          x: parseFloat(debugInfo.lookAt.x.toFixed(3)),
+          y: parseFloat(debugInfo.lookAt.y.toFixed(3)),
+          z: parseFloat(debugInfo.lookAt.z.toFixed(3)),
+        },
+        isAR: useARCamera,
+      },
+      lights: {
+        ambient: {
+          intensity: ambientIntensity,
+          color: '#ffffff',
+        },
+        point: {
+          intensity: pointIntensity,
+          color: '#ffffff',
+          position: pointLightRef.current ? {
+            x: parseFloat(pointLightRef.current.position.x.toFixed(2)),
+            y: parseFloat(pointLightRef.current.position.y.toFixed(2)),
+            z: parseFloat(pointLightRef.current.position.z.toFixed(2)),
+          } : { x: 10, y: 10, z: 10 },
+        },
+        directional: {
+          intensity: directionalIntensity,
+          color: '#ffffff',
+          position: directionalLightRef.current ? {
+            x: parseFloat(directionalLightRef.current.position.x.toFixed(2)),
+            y: parseFloat(directionalLightRef.current.position.y.toFixed(2)),
+            z: parseFloat(directionalLightRef.current.position.z.toFixed(2)),
+          } : { x: 5, y: 5, z: 5 },
+        },
+      },
+      environment: {
+        backgroundTexture: texturePath || null,
+        backgroundEnabled: bgTextureEnabled,
+        bloom: {
+          enabled: bloomEnabled,
+          intensity: bloomIntensity,
+          threshold: bloomThreshold,
+        },
+        vignette: {
+          offset: vignetteOffset,
+          darkness: vignetteDarkness,
+        },
+        toneMapping: 'ACESFilmic',
+        toneMappingExposure: 1.0,
+      },
+      objects,
+      shaders: {
+        equirectangularReflection: {
+          enabled: equirectGLBs.size > 0,
+          appliedToObjects: Array.from(equirectGLBs),
+          fresnelPower: equirectFresnelPower,
+          brightness: equirectBrightness,
+          metalness: equirectMetalness,
+          metalColor: {
+            r: equirectMetalColor.r,
+            g: equirectMetalColor.g,
+            b: equirectMetalColor.b,
+          },
+          useMetal: equirectUseMetal,
+          reflectionStrength: equirectReflectionStrength,
+          hologram: {
+            enabled: hologramEnabled,
+            intensity: hologramIntensity,
+            frequency: hologramFrequency,
+            speed: hologramSpeed,
+          },
+          feather: {
+            enabled: featherEnabled,
+            radius: featherRadius,
+            softness: featherSoftness,
+          },
+          blackHole: {
+            enabled: blackHoleEnabled,
+            darkColor: {
+              r: blackHoleDarkColor.r,
+              g: blackHoleDarkColor.g,
+              b: blackHoleDarkColor.b,
+            },
+            brightColor: {
+              r: blackHoleBrightColor.r,
+              g: blackHoleBrightColor.g,
+              b: blackHoleBrightColor.b,
+            },
+            intensity: blackHoleIntensity,
+          },
+        },
+      },
+      particles: {
+        globalEnabled: particlesEnabled,
+        density: particleDensity,
+        speed: particleSpeed,
+        vortexStrength: particleVortexStrength,
+        curlStrength: particleCurlStrength,
+        size: particleSize,
+        burstStrength: particleBurstStrength,
+        settleTime: particleSettleTime,
+        attractorStrength: particleAttractorStrength,
+        orbitDistance: particleOrbitDistance,
+        orbitSpeed: particleOrbitSpeed,
+        followCamera: particleFollowCamera,
+        debugEdgeTexture: debugEdgeTexture,
+      },
+    };
+
+    // Cria e faz download do JSON
+    const jsonString = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `scene-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    console.log('✅ Cena exportada com sucesso!');
+    console.log('📦 Dados exportados:', exportData);
   };
 
   // Função para criar e iniciar animação interpolada entre câmeras
@@ -2917,6 +3430,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         >
           {showDebugOverlay ? '🔽 Esconder Logs' : '🔼 Mostrar Logs'}
         </button>
+
+        {/* Botão para exportar cena para JSON */}
+        <button
+          onClick={exportSceneToJSON}
+          disabled={!sceneEnabled}
+          className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors ${
+            sceneEnabled 
+              ? 'bg-green-500 hover:bg-green-600 text-white'
+              : 'bg-gray-500 text-gray-300 cursor-not-allowed'
+          }`}
+          title="Exportar configuração da cena em JSON"
+        >
+          📦 Exportar JSON
+        </button>
         
         {useARCamera && !isVideoReady && (
           <div className="bg-yellow-500 text-black px-3 py-2 rounded-lg text-xs font-semibold">
@@ -3380,6 +3907,167 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                             onChange={e => setHologramSpeed(parseFloat(e.target.value))}
                             className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                           />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 🌫️ Feather Edge Effect */}
+                  <div className="border-t border-cyan-500/30 pt-2 mt-2">
+                    <div className="flex items-center gap-2 mb-2 p-2 bg-cyan-900/20 rounded">
+                      <input
+                        type="checkbox"
+                        id="featherEnabled"
+                        checked={featherEnabled}
+                        onChange={e => setFeatherEnabled(e.target.checked)}
+                        className="w-4 h-4 cursor-pointer"
+                      />
+                      <label htmlFor="featherEnabled" className="text-[9px] text-cyan-300 cursor-pointer flex-1">
+                        {featherEnabled ? '🌫️ Edge Feather ON' : '⬜ Edge Feather OFF'}
+                      </label>
+                    </div>
+
+                    {featherEnabled && (
+                      <>
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Radius: {featherRadius.toFixed(2)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="1.0"
+                            step="0.05"
+                            value={featherRadius}
+                            onChange={e => setFeatherRadius(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Softness: {featherSoftness.toFixed(2)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="0.5"
+                            step="0.05"
+                            value={featherSoftness}
+                            onChange={e => setFeatherSoftness(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 🌀 Black Hole Edge Pattern */}
+                  <div className="border-t border-pink-500/30 pt-2 mt-2">
+                    <div className="flex items-center gap-2 mb-2 p-2 bg-pink-900/20 rounded">
+                      <input
+                        type="checkbox"
+                        id="blackHoleEnabled"
+                        checked={blackHoleEnabled}
+                        onChange={e => setBlackHoleEnabled(e.target.checked)}
+                        className="w-4 h-4 cursor-pointer"
+                      />
+                      <label htmlFor="blackHoleEnabled" className="text-[9px] text-pink-300 cursor-pointer flex-1">
+                        {blackHoleEnabled ? '🌀 Black Hole Pattern ON' : '⚫ Black Hole Pattern OFF'}
+                      </label>
+                    </div>
+
+                    {blackHoleEnabled && (
+                      <>
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Intensity: {blackHoleIntensity.toFixed(2)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="1.0"
+                            step="0.05"
+                            value={blackHoleIntensity}
+                            onChange={e => setBlackHoleIntensity(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Dark Color (RGB)
+                          </label>
+                          <div className="grid grid-cols-3 gap-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={blackHoleDarkColor.r}
+                              onChange={e => setBlackHoleDarkColor(new THREE.Color(parseFloat(e.target.value), blackHoleDarkColor.g, blackHoleDarkColor.b))}
+                              className="w-full h-1 bg-red-600 rounded-lg appearance-none cursor-pointer"
+                              title="Red"
+                            />
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={blackHoleDarkColor.g}
+                              onChange={e => setBlackHoleDarkColor(new THREE.Color(blackHoleDarkColor.r, parseFloat(e.target.value), blackHoleDarkColor.b))}
+                              className="w-full h-1 bg-green-600 rounded-lg appearance-none cursor-pointer"
+                              title="Green"
+                            />
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={blackHoleDarkColor.b}
+                              onChange={e => setBlackHoleDarkColor(new THREE.Color(blackHoleDarkColor.r, blackHoleDarkColor.g, parseFloat(e.target.value)))}
+                              className="w-full h-1 bg-blue-600 rounded-lg appearance-none cursor-pointer"
+                              title="Blue"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Bright Color (RGB)
+                          </label>
+                          <div className="grid grid-cols-3 gap-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max="2"
+                              step="0.05"
+                              value={blackHoleBrightColor.r}
+                              onChange={e => setBlackHoleBrightColor(new THREE.Color(parseFloat(e.target.value), blackHoleBrightColor.g, blackHoleBrightColor.b))}
+                              className="w-full h-1 bg-red-600 rounded-lg appearance-none cursor-pointer"
+                              title="Red"
+                            />
+                            <input
+                              type="range"
+                              min="0"
+                              max="2"
+                              step="0.05"
+                              value={blackHoleBrightColor.g}
+                              onChange={e => setBlackHoleBrightColor(new THREE.Color(blackHoleBrightColor.r, parseFloat(e.target.value), blackHoleBrightColor.b))}
+                              className="w-full h-1 bg-green-600 rounded-lg appearance-none cursor-pointer"
+                              title="Green"
+                            />
+                            <input
+                              type="range"
+                              min="0"
+                              max="2"
+                              step="0.05"
+                              value={blackHoleBrightColor.b}
+                              onChange={e => setBlackHoleBrightColor(new THREE.Color(blackHoleBrightColor.r, blackHoleBrightColor.g, parseFloat(e.target.value)))}
+                              className="w-full h-1 bg-blue-600 rounded-lg appearance-none cursor-pointer"
+                              title="Blue"
+                            />
+                          </div>
                         </div>
                       </>
                     )}

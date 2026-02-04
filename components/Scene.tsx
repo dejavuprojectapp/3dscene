@@ -802,6 +802,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     if (directionalLightRef.current) directionalLightRef.current.intensity = directionalIntensity;
   }, [directionalIntensity]);
 
+  // Controla visibilidade das partículas apenas quando o estado muda
+  useEffect(() => {
+    particleSystemsRef.current.forEach((system) => {
+      system.points.visible = particlesEnabled;
+    });
+    console.log(`🌪️ Partículas ${particlesEnabled ? 'ativadas' : 'desativadas'}`);
+  }, [particlesEnabled]);
+
   // Log das luzes da cena sempre que a intensidade mudar
   useEffect(() => {
     const lightsInfo = [
@@ -2026,6 +2034,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     } else {
       console.error(`❌ Objeto não encontrado: ${objectName}`);
     }
+  };
+
+  // 🔄 Função placeholder para animação de reconstrução (a ser implementada)
+  const startReconstruction = (objectName: string) => {
+    console.log(`🔄 Animação de reconstrução será implementada para: ${objectName}`);
   };
 
   // Função para atualizar a escala de um objeto
@@ -3316,6 +3329,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           });
 
         let animationId: number;
+        let frameCounter = 0; // Contador para throttle de updates
         const startAnimation = () => {
           console.log('🎬 Iniciando loop de animação...');
           animate();
@@ -3408,7 +3422,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             if (cameraAR.aspect !== videoAspect) {
               cameraAR.aspect = videoAspect;
               cameraAR.updateProjectionMatrix();
-              console.log('📐 Camera AR aspect atualizado:', videoAspect);
             }
 
             // Sincroniza com DeviceOrientation (fake 3DOF)
@@ -3420,24 +3433,21 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           }
           
           // 🌪️ Sincroniza posição e escala das partículas com objeto pai
-          particleSystemsRef.current.forEach((system) => {
-            // Copia posição do objeto pai
-            system.points.position.copy(system.parentObject.position);
-            // Copia escala do objeto pai
-            system.points.scale.copy(system.parentObject.scale);
-          });
+          if (particleSystemsRef.current.size > 0) {
+            particleSystemsRef.current.forEach((system) => {
+              // Copia posição do objeto pai
+              system.points.position.copy(system.parentObject.position);
+              // Copia escala do objeto pai
+              system.points.scale.copy(system.parentObject.scale);
+            });
+          }
           
           // 📷 Follow Camera: Rotaciona sistema de partículas para seguir câmera
-          if (particleFollowCamera) {
+          if (particleFollowCamera && particleSystemsRef.current.size > 0) {
             const activeCamera = useARCamera ? cameraAR : camera;
             particleSystemsRef.current.forEach((system) => {
               // Copia APENAS rotação da câmera para o sistema de partículas
               system.points.rotation.copy(activeCamera.rotation);
-            });
-          } else {
-            // Reseta rotação quando followCamera está desativado
-            particleSystemsRef.current.forEach((system) => {
-              system.points.rotation.set(0, 0, 0);
             });
           }
           
@@ -3446,105 +3456,79 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             controls.update();
           }
           
-          // 🧹 Limpa buffers antes de renderizar para evitar cache visual
-          renderer.clear(true, true, true);
-          
           // Renderiza a cena com post-processing (vignette)
           composer.render();
 
-          // 🔍 DEBUG: Renderiza edge texture se ativado
-          if (debugEdgeTexture && particleSystemsRef.current.size > 0) {
-            // Pega o primeiro sistema de partículas para debug
-            const firstSystem = Array.from(particleSystemsRef.current.values())[0];
-            if (firstSystem && firstSystem.edge) {
-              // Renderiza edge texture em fullscreen para visualizar
-              const debugScene = new THREE.Scene();
-              const debugMaterial = new THREE.MeshBasicMaterial({
-                map: firstSystem.edge.texture,
-                side: THREE.DoubleSide,
-              });
-              const debugQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), debugMaterial);
-              debugScene.add(debugQuad);
-              
-              const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
-              renderer.setRenderTarget(null);
-              renderer.clear(true, true, true);
-              renderer.render(debugScene, orthoCamera);
-              
-              // Limpa temp objects
-              debugMaterial.dispose();
-              debugQuad.geometry.dispose();
-            }
+          // 🎮 Throttle: Atualiza debug info apenas a cada 10 frames (otimização)
+          frameCounter++;
+          if (frameCounter % 10 === 0) {
+            // Atualiza debug info constantemente
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            const lookAtPoint = camera.position.clone().add(direction);
+            
+            // Atualiza informações de debug em tempo real
+            const objectsInfo = sceneObjectsRef.current.map(({ name, object }) => ({
+              name,
+              position: {
+                x: parseFloat(object.position.x.toFixed(2)),
+                y: parseFloat(object.position.y.toFixed(2)),
+                z: parseFloat(object.position.z.toFixed(2)),
+              },
+              rotation: {
+                x: parseFloat((object.rotation.x * 180 / Math.PI).toFixed(1)),
+                y: parseFloat((object.rotation.y * 180 / Math.PI).toFixed(1)),
+                z: parseFloat((object.rotation.z * 180 / Math.PI).toFixed(1)),
+              },
+            }));
+
+            // Calcula distância da câmera à origem
+            const distanceToOrigin = parseFloat(camera.position.length().toFixed(2));
+            
+            // Calcula o tamanho do frustum no plano de distância atual
+            const vFOV = camera.fov * Math.PI / 180; // converte para radianos
+            const frustumHeight = 2 * Math.tan(vFOV / 2) * distanceToOrigin;
+            const frustumWidth = frustumHeight * camera.aspect;
+            
+            // Calcula área visível aproximada
+            const visibleArea = parseFloat((frustumWidth * frustumHeight).toFixed(2));
+
+            // Cria sempre um objeto completamente novo para forçar re-render
+            const newDebugInfo: DebugInfo = {
+              camera: {
+                x: parseFloat(camera.position.x.toFixed(2)),
+                y: parseFloat(camera.position.y.toFixed(2)),
+                z: parseFloat(camera.position.z.toFixed(2)),
+              },
+              cameraRotation: {
+                x: parseFloat((camera.rotation.x * 180 / Math.PI).toFixed(1)),
+                y: parseFloat((camera.rotation.y * 180 / Math.PI).toFixed(1)),
+                z: parseFloat((camera.rotation.z * 180 / Math.PI).toFixed(1)),
+              },
+              lookAt: {
+                x: parseFloat(lookAtPoint.x.toFixed(2)),
+                y: parseFloat(lookAtPoint.y.toFixed(2)),
+                z: parseFloat(lookAtPoint.z.toFixed(2)),
+              },
+              viewport: {
+                width: renderer.domElement.width,
+                height: renderer.domElement.height,
+                aspect: parseFloat(camera.aspect.toFixed(3)),
+                fov: camera.fov,
+                near: camera.near,
+                far: camera.far,
+                frustumWidth: parseFloat(frustumWidth.toFixed(2)),
+                frustumHeight: parseFloat(frustumHeight.toFixed(2)),
+                distanceToOrigin,
+                visibleArea,
+              },
+              objects: objectsInfo,
+            };
+            
+            // Força atualização sempre criando objeto novo
+            setDebugInfo({ ...newDebugInfo });
+            setFrameCount(prev => prev + 1);
           }
-          
-          // Atualiza debug info constantemente
-          const direction = new THREE.Vector3();
-          camera.getWorldDirection(direction);
-          const lookAtPoint = camera.position.clone().add(direction);
-          
-          // Atualiza informações de debug em tempo real
-          const objectsInfo = sceneObjectsRef.current.map(({ name, object }) => ({
-            name,
-            position: {
-              x: parseFloat(object.position.x.toFixed(2)),
-              y: parseFloat(object.position.y.toFixed(2)),
-              z: parseFloat(object.position.z.toFixed(2)),
-            },
-            rotation: {
-              x: parseFloat((object.rotation.x * 180 / Math.PI).toFixed(1)),
-              y: parseFloat((object.rotation.y * 180 / Math.PI).toFixed(1)),
-              z: parseFloat((object.rotation.z * 180 / Math.PI).toFixed(1)),
-            },
-          }));
-
-          // Calcula distância da câmera à origem
-          const distanceToOrigin = parseFloat(camera.position.length().toFixed(2));
-          
-          // Calcula o tamanho do frustum no plano de distância atual
-          const vFOV = camera.fov * Math.PI / 180; // converte para radianos
-          const frustumHeight = 2 * Math.tan(vFOV / 2) * distanceToOrigin;
-          const frustumWidth = frustumHeight * camera.aspect;
-          
-          // Calcula área visível aproximada
-          const visibleArea = parseFloat((frustumWidth * frustumHeight).toFixed(2));
-
-          // Cria sempre um objeto completamente novo para forçar re-render
-          const newDebugInfo: DebugInfo = {
-            camera: {
-              x: parseFloat(camera.position.x.toFixed(2)),
-              y: parseFloat(camera.position.y.toFixed(2)),
-              z: parseFloat(camera.position.z.toFixed(2)),
-            },
-            cameraRotation: {
-              x: parseFloat((camera.rotation.x * 180 / Math.PI).toFixed(1)),
-              y: parseFloat((camera.rotation.y * 180 / Math.PI).toFixed(1)),
-              z: parseFloat((camera.rotation.z * 180 / Math.PI).toFixed(1)),
-            },
-            lookAt: {
-              x: parseFloat(lookAtPoint.x.toFixed(2)),
-              y: parseFloat(lookAtPoint.y.toFixed(2)),
-              z: parseFloat(lookAtPoint.z.toFixed(2)),
-            },
-            viewport: {
-              width: renderer.domElement.width,
-              height: renderer.domElement.height,
-              aspect: parseFloat(camera.aspect.toFixed(3)),
-              fov: camera.fov,
-              near: camera.near,
-              far: camera.far,
-              frustumWidth: parseFloat(frustumWidth.toFixed(2)),
-              frustumHeight: parseFloat(frustumHeight.toFixed(2)),
-              distanceToOrigin,
-              visibleArea,
-            },
-            objects: objectsInfo,
-          };
-          
-          // Debug info atualizado em tempo real no overlay (console logs removidos para evitar duplicação)
-          
-          // Força atualização sempre criando objeto novo
-          setDebugInfo({ ...newDebugInfo });
-          setFrameCount(prev => prev + 1);
         };
         animate();
 
@@ -4908,6 +4892,16 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                           <label htmlFor={`clickable-${obj.name}`} className="text-[9px] text-cyan-400">
                             🖱️ Clickable (abre modal)
                           </label>
+                        </div>
+                        
+                        {/* 🔄 Reconstruction Animation */}
+                        <div className="mt-2">
+                          <button
+                            onClick={() => startReconstruction(obj.name)}
+                            className="w-full px-2 py-1 bg-purple-600/20 hover:bg-purple-600/40 border border-purple-400/30 rounded text-[9px] text-purple-300 transition-colors"
+                          >
+                            🔄 Animação de Reconstrução
+                          </button>
                         </div>
                       </div>
                       

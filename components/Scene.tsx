@@ -557,6 +557,7 @@ interface SceneExportData {
     scale: { x: number; y: number; z: number };
     visible: boolean;
     opacity: number;
+    brightness?: number;
     clickable?: boolean;
     modalData?: {
       mainImage: string;
@@ -646,6 +647,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     name: string; 
     object: THREE.Object3D; 
     targetPosition: { x: number; y: number; z: number }; 
+    scale: { x: number; y: number; z: number };
     opacity: number; 
     visible: boolean; 
     brightness?: number;
@@ -748,6 +750,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     material: THREE.ShaderMaterial;
     geometry: THREE.BufferGeometry;
     points: THREE.Points;
+    parentObject: THREE.Object3D;
   }>>(new Map());
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
@@ -1925,12 +1928,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         sceneRef.current.add(points);
       }
 
+      // Encontra o objeto pai para vincular as partículas
+      const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+      if (!objData) {
+        console.error(`❌ Objeto pai não encontrado: ${objectName}`);
+        return;
+      }
+
       particleSystemsRef.current.set(objectName, {
         mask: maskTarget,
         edge: edgeTarget,
         material: particleMaterial,
         geometry: geometry,
         points: points,
+        parentObject: objData.object,
       });
 
       console.log(`🌪️ Sistema de partículas inicializado: ${objectName}`);
@@ -2012,6 +2023,47 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       const radians = degrees * (Math.PI / 180);
       objData.object.rotation[axis] = radians;
       console.log(`🔄 Rotação: ${objectName} - ${axis.toUpperCase()}: ${degrees}°`);
+    } else {
+      console.error(`❌ Objeto não encontrado: ${objectName}`);
+    }
+  };
+
+  // Função para atualizar a escala de um objeto
+  const updateObjectScale = (objectName: string, axis: 'x' | 'y' | 'z', value: number) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (objData) {
+      objData.scale[axis] = value;
+      objData.object.scale[axis] = value;
+      console.log(`📏 Escala: ${objectName} - ${axis.toUpperCase()}: ${value}`);
+      
+      // 🌪️ Se o objeto tem sistema de partículas, recria com nova escala
+      const hasParticles = particleSystemsRef.current.has(objectName);
+      if (hasParticles && rendererRef.current && particlesEnabled) {
+        console.log(`🔄 Recriando sistema de partículas para ${objectName} com nova escala`);
+        
+        // Remove sistema antigo
+        removeParticleSystem(objectName);
+        
+        // Recria com nova escala
+        // Precisa ser o mesh do objeto (primeiro filho que é Mesh)
+        let mesh: THREE.Mesh | null = null;
+        objData.object.traverse((child) => {
+          if (child instanceof THREE.Mesh && !mesh) {
+            mesh = child;
+          }
+        });
+        
+        if (mesh) {
+          // Pequeno delay para garantir que a remoção foi processada
+          setTimeout(() => {
+            if (mesh && rendererRef.current) {
+              initializeParticleSystem(mesh, objectName, rendererRef.current);
+            }
+          }, 100);
+        } else {
+          console.warn(`⚠️ Mesh não encontrado para recriar partículas: ${objectName}`);
+        }
+      }
     } else {
       console.error(`❌ Objeto não encontrado: ${objectName}`);
     }
@@ -2217,6 +2269,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         },
         visible: obj.visible,
         opacity: obj.opacity,
+        brightness: obj.brightness,
         clickable: obj.clickable,
         modalData: obj.clickable && obj.modalData ? {
           mainImage: obj.modalData.mainImage,
@@ -3147,6 +3200,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   name: fileName,
                   object: model,
                   targetPosition: { x: 0, y: 0, z: 0 },
+                  scale: { x: 1, y: 1, z: 1 },
                   opacity: 1,
                   visible: true,
                   brightness: 1.0 // Brilho inicial
@@ -3231,7 +3285,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 console.log('➕ Adicionando PLY à cena:', fileName, '| Total objetos na cena antes:', scene.children.length);
                 scene.add(points);
                 console.log('✅ PLY adicionado:', fileName, '| Total objetos na cena depois:', scene.children.length);
-                sceneObjectsRef.current.push({ name: fileName, object: points, targetPosition: { x: 0, y: 0, z: 0 }, opacity: 1, visible: true });
+                sceneObjectsRef.current.push({ name: fileName, object: points, targetPosition: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 }, opacity: 1, visible: true });
                 
                 // Cleanup: geometria e material agora pertencem ao objeto Points na cena
                 console.log(`🧹 PLY loader: recursos temporários liberados para ${fileName}`);
@@ -3364,6 +3418,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             cameraAR.rotation.x = THREE.MathUtils.degToRad(beta - 90); // pitch (ajuste de 90° para landscape)
             cameraAR.rotation.z = THREE.MathUtils.degToRad(gamma); // roll
           }
+          
+          // 🌪️ Sincroniza posição e escala das partículas com objeto pai
+          particleSystemsRef.current.forEach((system) => {
+            // Copia posição do objeto pai
+            system.points.position.copy(system.parentObject.position);
+            // Copia escala do objeto pai
+            system.points.scale.copy(system.parentObject.scale);
+          });
           
           // 📷 Follow Camera: Rotaciona sistema de partículas para seguir câmera
           if (particleFollowCamera) {
@@ -4883,6 +4945,37 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                           className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
                         />
                       </div>
+                      <p className="text-[9px] text-gray-300 mt-1">Escala:</p>
+                      <div className="ml-2 flex items-center gap-1">
+                        <span className="text-[9px] w-6">X:</span>
+                        <input 
+                          type="number" 
+                          step="0.1"
+                          defaultValue={1}
+                          onChange={(e) => updateObjectScale(obj.name, 'x', parseFloat(e.target.value) || 1)}
+                          className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                        />
+                      </div>
+                      <div className="ml-2 flex items-center gap-1">
+                        <span className="text-[9px] w-6">Y:</span>
+                        <input 
+                          type="number" 
+                          step="0.1"
+                          defaultValue={1}
+                          onChange={(e) => updateObjectScale(obj.name, 'y', parseFloat(e.target.value) || 1)}
+                          className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                        />
+                      </div>
+                      <div className="ml-2 flex items-center gap-1">
+                        <span className="text-[9px] w-6">Z:</span>
+                        <input 
+                          type="number" 
+                          step="0.1"
+                          defaultValue={1}
+                          onChange={(e) => updateObjectScale(obj.name, 'z', parseFloat(e.target.value) || 1)}
+                          className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                        />
+                      </div>
                       <p className="text-[9px] text-gray-300 mt-1">Rotação (graus):</p>
                       <div className="ml-2 flex items-center gap-1">
                         <span className="text-[9px] w-6">X:</span>
@@ -5036,6 +5129,37 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                     step="0.1"
                     defaultValue={obj.position.z}
                     onChange={(e) => updateObjectPosition(obj.name, 'z', parseFloat(e.target.value) || 0)}
+                    className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                  />
+                </div>
+                <p className="text-[9px] text-gray-300 mt-1">Escala:</p>
+                <div className="ml-2 flex items-center gap-1">
+                  <span className="text-[9px] w-6">X:</span>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    defaultValue={1}
+                    onChange={(e) => updateObjectScale(obj.name, 'x', parseFloat(e.target.value) || 1)}
+                    className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                  />
+                </div>
+                <div className="ml-2 flex items-center gap-1">
+                  <span className="text-[9px] w-6">Y:</span>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    defaultValue={1}
+                    onChange={(e) => updateObjectScale(obj.name, 'y', parseFloat(e.target.value) || 1)}
+                    className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
+                  />
+                </div>
+                <div className="ml-2 flex items-center gap-1">
+                  <span className="text-[9px] w-6">Z:</span>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    defaultValue={1}
+                    onChange={(e) => updateObjectScale(obj.name, 'z', parseFloat(e.target.value) || 1)}
                     className="w-14 bg-white/10 border border-white/20 rounded px-1 text-[9px] text-white"
                   />
                 </div>

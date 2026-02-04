@@ -557,13 +557,19 @@ interface SceneExportData {
     scale: { x: number; y: number; z: number };
     visible: boolean;
     opacity: number;
+    clickable?: boolean;
+    modalData?: {
+      mainImage: string;
+      thumbnails: string[];
+      secondaryImage: string;
+    };
     shader?: {
       type: string;
-      uniforms?: Record<string, any>;
+      uniforms?: Record<string, unknown>;
     };
     material?: {
       type: string;
-      properties: Record<string, any>;
+      properties: Record<string, unknown>;
     };
     particleSystem?: {
       enabled: boolean;
@@ -636,7 +642,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [bgTextureEnabled, setBgTextureEnabled] = useState(false); // Controla se a textura de fundo está ativa
   const sceneRef = useRef<THREE.Scene | null>(null); // Ref para a cena Three.js
   const bgTextureRef = useRef<THREE.Texture | null>(null); // Ref para a textura de fundo carregada
-  const sceneObjectsRef = useRef<Array<{ name: string; object: THREE.Object3D; targetPosition: { x: number; y: number; z: number }; opacity: number; visible: boolean; brightness?: number }>>([]);
+  const sceneObjectsRef = useRef<Array<{ 
+    name: string; 
+    object: THREE.Object3D; 
+    targetPosition: { x: number; y: number; z: number }; 
+    opacity: number; 
+    visible: boolean; 
+    brightness?: number;
+    clickable?: boolean;
+    modalData?: {
+      mainImage: string;
+      thumbnails: string[];
+      secondaryImage: string;
+    };
+  }>>([]);
   const cameraARRef = useRef<THREE.PerspectiveCamera | null>(null);
   const deviceOrientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
   const debugInfoRef = useRef<DebugInfo>({
@@ -745,6 +764,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [particleOrbitSpeed, setParticleOrbitSpeed] = useState(1.0); // 0.5 - 3.0 (velocidade de rotação)
   const [particleFollowCamera, setParticleFollowCamera] = useState(true); // Partículas seguem rotação da câmera
   const [debugEdgeTexture, setDebugEdgeTexture] = useState(false); // Debug: renderiza edge texture
+
+  // 🖱️ Click Modal System
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedObjectData, setSelectedObjectData] = useState<{
+    name: string;
+    mainImage: string;
+    thumbnails: string[];
+    secondaryImage: string;
+  } | null>(null);
+  const [currentThumbnailIndex, setCurrentThumbnailIndex] = useState(0);
+  const raycasterRef = useRef<THREE.Raycaster | null>(null);
+  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
+  const hoveredObjectRef = useRef<string | null>(null);
+  const [cursorPointer, setCursorPointer] = useState(false);
 
   // --- HOOKS DEVEM FICAR AQUI, NO TOPO DO COMPONENTE ---
   useEffect(() => {
@@ -1261,6 +1294,205 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       
       console.log(`💡 GLB Brightness: ${objectName} = ${brightness.toFixed(2)}`);
     }
+  };
+
+  // 🖱️ Função para toggle clickable de um objeto GLB
+  const toggleObjectClickable = (objectName: string, clickable: boolean) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (objData) {
+      objData.clickable = clickable;
+      
+      // ✅ Define userData.clickable para convenção padrão
+      objData.object.userData.clickable = clickable;
+      if (clickable) {
+        objData.object.userData.payload = {
+          id: objectName,
+          type: 'glb-model'
+        };
+      }
+      
+      // Inicializa modalData com imagens padrão se não existir
+      if (clickable && !objData.modalData) {
+        objData.modalData = {
+          mainImage: '/placeholder-main.jpg',
+          thumbnails: ['/placeholder-thumb1.jpg', '/placeholder-thumb2.jpg', '/placeholder-thumb3.jpg'],
+          secondaryImage: '/placeholder-secondary.jpg',
+        };
+      }
+      
+      console.log(`🖱️ Clickable ${clickable ? 'ativado' : 'desativado'} para: ${objectName}`);
+    }
+  };
+
+  // 🖱️ Função para atualizar modal data de um objeto
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const updateObjectModalData = (objectName: string, data: { mainImage?: string; thumbnails?: string[]; secondaryImage?: string }) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (objData && objData.modalData) {
+      if (data.mainImage) objData.modalData.mainImage = data.mainImage;
+      if (data.thumbnails) objData.modalData.thumbnails = data.thumbnails;
+      if (data.secondaryImage) objData.modalData.secondaryImage = data.secondaryImage;
+      console.log(`📸 Modal data atualizado para: ${objectName}`, data);
+    }
+  };
+
+  // 🖱️ Handler de pointerdown no canvas - EMITE EVENTO, NÃO MANIPULA UI
+  // Funciona em: 🖱 Desktop | 📱 Mobile | ✏️ Caneta | 🥽 WebXR
+  const handleCanvasPointerDown = (event: PointerEvent) => {
+    // 🔍 CHECKPOINT 1 - Evento chegou?
+    console.log('✅ pointerdown OK', event.pointerType);
+    
+    if (!raycasterRef.current || !activeCameraRef.current || !sceneRef.current || !containerRef.current) return;
+
+    // ⚠️ Previne conflito com UI - Se clicou na UI, não faz raycast
+    const target = event.target as HTMLElement;
+    if (target.closest('.ui-layer, button, input, label')) return;
+
+    // Calcula posição do pointer normalizada (-1 a +1)
+    // getBoundingClientRect() evita bugs em layouts responsivos
+    const rect = containerRef.current.getBoundingClientRect();
+    mouseRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouseRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Atualiza raycaster
+    raycasterRef.current.setFromCamera(mouseRef.current, activeCameraRef.current);
+
+    // Filtra apenas objetos GLB clickables
+    const clickableObjects = sceneObjectsRef.current
+      .filter(obj => {
+        const isGLB = obj.name.toLowerCase().endsWith('.glb');
+        return isGLB && obj.clickable && obj.visible;
+      })
+      .map(obj => obj.object);
+
+    // Checa intersecções
+    const intersects = raycasterRef.current.intersectObjects(clickableObjects, true);
+
+    if (intersects.length === 0) return;
+
+    // Pega o primeiro hit
+    const hit = intersects[0].object;
+
+    // Encontra o objeto pai (modelo GLB)
+    let clickedObject = hit;
+    while (clickedObject.parent && !clickedObject.name.endsWith('.glb')) {
+      clickedObject = clickedObject.parent;
+    }
+
+    // Busca dados do objeto
+    const objData = sceneObjectsRef.current.find(obj => obj.object === clickedObject || obj.name === clickedObject.name);
+    
+    if (!objData || !objData.clickable || !objData.modalData) return;
+
+    console.log('🎯 Objeto clicado:', objData.name);
+    
+    // 🎯 EMITE CUSTOM EVENT - Cena não manipula UI diretamente
+    window.dispatchEvent(
+      new CustomEvent('object-clicked', {
+        detail: {
+          id: objData.name,
+          name: objData.name,
+          mainImage: objData.modalData.mainImage,
+          thumbnails: objData.modalData.thumbnails,
+          secondaryImage: objData.modalData.secondaryImage,
+        }
+      })
+    );
+  };
+
+  // 🖱️ Handler de hover no canvas - Feedback visual (APENAS MOUSE)
+  // Mobile não tem hover, então só ativa se pointerType === 'mouse'
+  const handleCanvasPointerMove = (event: PointerEvent) => {
+    // ⚠️ Mobile não tem hover - ignora se não for mouse
+    if (event.pointerType !== 'mouse') return;
+    
+    if (!raycasterRef.current || !activeCameraRef.current || !sceneRef.current || !containerRef.current) return;
+
+    // Calcula posição do pointer normalizada
+    const rect = containerRef.current.getBoundingClientRect();
+    mouseRef.current.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouseRef.current.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Atualiza raycaster
+    raycasterRef.current.setFromCamera(mouseRef.current, activeCameraRef.current);
+
+    // Filtra apenas objetos GLB clickables
+    const clickableObjects = sceneObjectsRef.current
+      .filter(obj => {
+        const isGLB = obj.name.toLowerCase().endsWith('.glb');
+        return isGLB && obj.clickable && obj.visible;
+      })
+      .map(obj => obj.object);
+
+    // Checa intersecções
+    const intersects = raycasterRef.current.intersectObjects(clickableObjects, true);
+
+    // Remove highlight do objeto anterior
+    if (hoveredObjectRef.current) {
+      const prevObj = sceneObjectsRef.current.find(obj => obj.name === hoveredObjectRef.current);
+      if (prevObj) {
+        removeOutline(prevObj.object);
+      }
+      hoveredObjectRef.current = null;
+      setCursorPointer(false);
+    }
+
+    // Adiciona highlight no novo objeto
+    if (intersects.length > 0) {
+      let hoveredObject = intersects[0].object;
+      while (hoveredObject.parent && !hoveredObject.name.endsWith('.glb')) {
+        hoveredObject = hoveredObject.parent;
+      }
+
+      const objData = sceneObjectsRef.current.find(obj => obj.object === hoveredObject || obj.name === hoveredObject.name);
+      
+      if (objData && objData.clickable) {
+        hoveredObjectRef.current = objData.name;
+        addOutline(objData.object);
+        setCursorPointer(true);
+      }
+    }
+  };
+
+  // 🌟 Adiciona outline/highlight visual ao objeto
+  const addOutline = (object: THREE.Object3D) => {
+    object.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.isMesh && mesh.material) {
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach((mat) => {
+          if ('emissive' in mat && mat.emissive) {
+            // Salva emissive original se ainda não foi salvo
+            const userData = mat.userData as Record<string, unknown>;
+            if (!userData.originalEmissive) {
+              userData.originalEmissive = (mat.emissive as THREE.Color).clone();
+            }
+            // Aplica highlight
+            (mat.emissive as THREE.Color).setHex(0x00ffff); // Cyan highlight
+            (mat as THREE.Material).needsUpdate = true;
+          }
+        });
+      }
+    });
+  };
+
+  // 🌑 Remove outline/highlight do objeto
+  const removeOutline = (object: THREE.Object3D) => {
+    object.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.isMesh && mesh.material) {
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach((mat) => {
+          if ('emissive' in mat && mat.emissive) {
+            const userData = mat.userData as Record<string, unknown>;
+            if (userData.originalEmissive && userData.originalEmissive instanceof THREE.Color) {
+              (mat.emissive as THREE.Color).copy(userData.originalEmissive);
+              (mat as THREE.Material).needsUpdate = true;
+            }
+          }
+        });
+      }
+    });
   };
 
   // 🌐 Funções de preset para metalness
@@ -1867,7 +2099,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     // Helper para extrair propriedades de shader
     const getShaderProperties = (object: THREE.Object3D, name: string) => {
       const fileType = getFileType(name);
-      const result: any = {};
+      const result: Record<string, unknown> = {};
 
       if (fileType === 'ply' || fileType === 'splat') {
         // PLY/SPLAT usa ShaderMaterial custom
@@ -1923,13 +2155,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         }
       }
 
-      return Object.keys(result).length > 0 ? result : undefined;
+      return Object.keys(result).length > 0 ? result as { type: string; uniforms?: Record<string, unknown> } : undefined;
     };
 
     // Helper para extrair propriedades de material
     const getMaterialProperties = (object: THREE.Object3D, name: string) => {
       const fileType = getFileType(name);
-      const result: any = {};
+      const result: Record<string, unknown> = {};
 
       if (fileType === 'glb' || fileType === 'gltf') {
         let material: THREE.Material | undefined;
@@ -1954,7 +2186,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         }
       }
 
-      return Object.keys(result).length > 0 ? result : undefined;
+      return Object.keys(result).length > 0 ? result as { type: string; properties: Record<string, unknown> } : undefined;
     };
 
     // Coleta objetos da cena
@@ -1985,6 +2217,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         },
         visible: obj.visible,
         opacity: obj.opacity,
+        clickable: obj.clickable,
+        modalData: obj.clickable && obj.modalData ? {
+          mainImage: obj.modalData.mainImage,
+          thumbnails: obj.modalData.thumbnails,
+          secondaryImage: obj.modalData.secondaryImage,
+        } : undefined,
         shader: getShaderProperties(obj.object, obj.name),
         material: getMaterialProperties(obj.object, obj.name),
         particleSystem: hasParticles ? {
@@ -2252,6 +2490,72 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       }
     };
   }, [isAnimating, savedCameras]);
+
+  // 🖱️ Inicializa raycaster e adiciona event listeners
+  // Usa pointerdown/pointermove para funcionar em: Desktop + Mobile + Caneta + WebXR
+  useEffect(() => {
+    // Inicializa raycaster
+    import('three').then((THREE) => {
+      raycasterRef.current = new THREE.Raycaster();
+    });
+    
+    // Adiciona event listeners
+    const canvas = containerRef.current?.querySelector('canvas');
+    
+    // 🔍 CHECKPOINT - Canvas encontrado?
+    console.log('🔍 Canvas encontrado?', !!canvas);
+    console.log('🔍 containerRef.current?', !!containerRef.current);
+    if (canvas) {
+      console.log('🔍 Canvas tagName:', canvas.tagName);
+      console.log('🔍 Canvas pointer-events:', window.getComputedStyle(canvas).pointerEvents);
+    }
+    
+    if (canvas) {
+      // ✅ pointerdown funciona em todos os devices (não click, não touchstart)
+      canvas.addEventListener('pointerdown', handleCanvasPointerDown as EventListener);
+      // ✅ pointermove para hover (apenas mouse, mobile ignora)
+      canvas.addEventListener('pointermove', handleCanvasPointerMove as EventListener);
+      console.log('✅ Event listeners pointerdown/pointermove adicionados (desktop + mobile)');
+    } else {
+      console.error('❌ Canvas não encontrado! containerRef.current:', containerRef.current);
+    }
+
+    // Cleanup
+    return () => {
+      if (canvas) {
+        canvas.removeEventListener('pointerdown', handleCanvasPointerDown as EventListener);
+        canvas.removeEventListener('pointermove', handleCanvasPointerMove as EventListener);
+      }
+      // Remove highlight ao desmontar
+      if (hoveredObjectRef.current) {
+        const obj = sceneObjectsRef.current.find(o => o.name === hoveredObjectRef.current);
+        if (obj) removeOutline(obj.object);
+      }
+    };
+  }, []); // 🚫 OBSOLETO - Este useEffect roda ANTES do canvas existir! Movido para depois da criação do renderer
+
+  // 🖱️ UI reage ao CustomEvent 'object-clicked' (separação de responsabilidades)
+  useEffect(() => {
+    const handleObjectClicked = (event: Event) => {
+      const customEvent = event as CustomEvent<{
+        name: string;
+        mainImage: string;
+        thumbnails: string[];
+        secondaryImage: string;
+      }>;
+      
+      console.log('📢 CustomEvent recebido: object-clicked', customEvent.detail);
+      setSelectedObjectData(customEvent.detail);
+      setCurrentThumbnailIndex(0);
+      setModalOpen(true);
+    };
+
+    window.addEventListener('object-clicked', handleObjectClicked);
+
+    return () => {
+      window.removeEventListener('object-clicked', handleObjectClicked);
+    };
+  }, []);
 
   // Inicializa webcam/câmera traseira
   const startARCamera = async () => {
@@ -2734,6 +3038,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         renderer.domElement.style.left = '0';
         renderer.domElement.style.zIndex = '10'; // Acima do vídeo (z-index: 1)
         renderer.domElement.style.pointerEvents = 'auto'; // Permite interação com OrbitControls
+        
+        // 🖱️ ADICIONA EVENT LISTENERS AQUI (depois do canvas criado!)
+        const canvas = renderer.domElement;
+        console.log('✅ Canvas criado, adicionando event listeners...');
+        canvas.addEventListener('pointerdown', handleCanvasPointerDown as EventListener);
+        canvas.addEventListener('pointermove', handleCanvasPointerMove as EventListener);
+        console.log('✅ Event listeners pointerdown/pointermove adicionados');
+        
+        // Cleanup dos event listeners
+        cleanupFunctionsRef.current.push(() => {
+          canvas.removeEventListener('pointerdown', handleCanvasPointerDown as EventListener);
+          canvas.removeEventListener('pointermove', handleCanvasPointerMove as EventListener);
+          console.log('🧹 Event listeners removidos');
+        });
 
         const ambientLight = new THREE.AmbientLight(0xffffff, ambientIntensity);
         ambientLightRef.current = ambientLight;
@@ -3324,7 +3642,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     <div 
       ref={containerRef} 
       className="w-full h-full" 
-      style={{ position: 'relative', background: 'transparent', overflow: 'hidden' }} 
+      style={{ 
+        position: 'relative', 
+        background: 'transparent', 
+        overflow: 'hidden',
+        cursor: cursorPointer ? 'pointer' : 'default'
+      }} 
     >
       {/* Video Background para AR Camera - DEVE ficar atrás do canvas */}
       <video
@@ -4375,6 +4698,38 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           </div>
         )}
 
+        {/* 🖱️ Clickable Objects Status */}
+        <div className="mb-3 border-b border-white/20 pb-2">
+          <p className="font-semibold text-cyan-300 mb-1">🖱️ Objetos Clickables:</p>
+          {sceneObjectsRef.current.filter(obj => obj.clickable).length === 0 ? (
+            <p className="text-gray-400 text-[10px]">Nenhum objeto clickable</p>
+          ) : (
+            <div className="space-y-1">
+              {sceneObjectsRef.current.filter(obj => obj.clickable).map((obj, idx) => (
+                <div 
+                  key={`clickable-${idx}`}
+                  className={`p-1 rounded text-[9px] ${
+                    hoveredObjectRef.current === obj.name 
+                      ? 'bg-cyan-500/30 border border-cyan-400' 
+                      : 'bg-white/5'
+                  }`}
+                >
+                  <p className="font-semibold text-cyan-200">
+                    {hoveredObjectRef.current === obj.name ? '👆 ' : '🖱️ '}
+                    {obj.name}
+                  </p>
+                  {hoveredObjectRef.current === obj.name && (
+                    <p className="text-cyan-400 text-[8px] mt-0.5">Hover ativo - Click para abrir modal</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 text-[8px] text-gray-500 bg-gray-800/50 p-1 rounded">
+            💡 Cursor pointer + outline cyan ao passar sobre objetos
+          </div>
+        </div>
+
         {/* Viewport Info */}
         <div className="mb-3 border-b border-white/20 pb-2">
           <p className="font-semibold text-purple-300 mb-1">🖥️ Viewport:</p>
@@ -4474,6 +4829,22 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                           />
                           <label htmlFor={`equirect-${obj.name}`} className="text-[9px] text-green-300">
                             🌐 HDRI Equirectangular
+                          </label>
+                        </div>
+
+                        {/* 🖱️ Clickable Toggle */}
+                        <div className="flex items-center gap-2 mt-2">
+                          <input 
+                            type="checkbox"
+                            id={`clickable-${obj.name}`}
+                            defaultChecked={false}
+                            onChange={(e) => {
+                              toggleObjectClickable(obj.name, e.target.checked);
+                            }}
+                            className="w-4 h-4 cursor-pointer"
+                          />
+                          <label htmlFor={`clickable-${obj.name}`} className="text-[9px] text-cyan-400">
+                            🖱️ Clickable (abre modal)
                           </label>
                         </div>
                       </div>
@@ -4726,6 +5097,89 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           )}
         </div>
       </div>
+      )}
+
+      {/* 🖱️ Click Modal - Bottom Responsive */}
+      {modalOpen && selectedObjectData && (
+        <div className="absolute bottom-0 left-0 right-0 z-50 flex justify-center p-2 sm:p-4">
+          <div className="bg-black/90 backdrop-blur-md rounded-lg shadow-2xl w-full max-w-[300px] sm:max-w-[500px] md:max-w-[600px]">
+            {/* Header com botão fechar */}
+            <div className="flex items-center justify-between p-3 border-b border-white/20">
+              <h3 className="text-white font-semibold text-sm sm:text-base">{selectedObjectData.name}</h3>
+              <button
+                onClick={() => {
+                  setModalOpen(false);
+                  setSelectedObjectData(null);
+                  setCurrentThumbnailIndex(0);
+                }}
+                className="text-white/70 hover:text-white transition text-xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content - 2 colunas */}
+            <div className="p-3 grid grid-cols-2 gap-3">
+              {/* Coluna 1 - Imagem Principal + Thumbnails */}
+              <div className="space-y-2">
+                {/* Imagem Principal */}
+                <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
+                  <img
+                    src={selectedObjectData.mainImage}
+                    alt="Main"
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23333" width="100" height="100"/%3E%3Ctext x="50%25" y="50%25" font-size="14" fill="%23999" text-anchor="middle" dominant-baseline="middle"%3ENo Image%3C/text%3E%3C/svg%3E';
+                    }}
+                  />
+                </div>
+
+                {/* Carrossel de Thumbnails */}
+                <div className="flex gap-1.5">
+                  {selectedObjectData.thumbnails.map((thumb, index) => (
+                    <button
+                      key={index}
+                      onClick={() => setCurrentThumbnailIndex(index)}
+                      className={`flex-1 aspect-square rounded-md overflow-hidden transition ${
+                        currentThumbnailIndex === index
+                          ? 'ring-2 ring-cyan-400'
+                          : 'opacity-60 hover:opacity-100'
+                      }`}
+                    >
+                      <img
+                        src={thumb}
+                        alt={`Thumb ${index + 1}`}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="50" height="50"%3E%3Crect fill="%23444" width="50" height="50"/%3E%3Ctext x="50%25" y="50%25" font-size="10" fill="%23999" text-anchor="middle" dominant-baseline="middle"%3E${index + 1}%3C/text%3E%3C/svg%3E';
+                        }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Coluna 2 - Imagem Secundária */}
+              <div className="aspect-square bg-gray-800 rounded-lg overflow-hidden">
+                <img
+                  src={selectedObjectData.secondaryImage}
+                  alt="Secondary"
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23333" width="100" height="100"/%3E%3Ctext x="50%25" y="50%25" font-size="14" fill="%23999" text-anchor="middle" dominant-baseline="middle"%3ENo Image%3C/text%3E%3C/svg%3E';
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Footer com info */}
+            <div className="p-2 border-t border-white/20 text-center">
+              <p className="text-white/60 text-xs">
+                Thumbnail {currentThumbnailIndex + 1} de {selectedObjectData.thumbnails.length}
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

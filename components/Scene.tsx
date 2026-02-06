@@ -261,6 +261,139 @@ const equirectangularReflectionFragmentShader = `
 `;
 
 // ====================================
+// 🕰️ CAMERA TRANSITION SHADER - Desfragmentação Pixel
+// ====================================
+
+const cameraTransitionVertexShader = `
+  varying vec2 vUv;
+  
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const cameraTransitionFragmentShader = `
+  uniform sampler2D tDiffuse;     // Textura nova (renderização atual)
+  uniform sampler2D tOld;         // Textura antiga (snapshot antes da transição)
+  uniform float uProgress;        // 0.0 a 1.0 - progresso da transição
+  uniform vec2 uResolution;       // Resolução da tela
+  uniform float uBlockSize;       // Tamanho dos blocos de pixel
+  uniform bool uHasOldTexture;    // Se temos textura antiga para transição
+  
+  varying vec2 vUv;
+  
+  // Função de ruído simplificada
+  float random(vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+  }
+  
+  void main() {
+    vec2 uv = vUv;
+    vec4 newColor = texture2D(tDiffuse, uv);
+    
+    if (!uHasOldTexture) {
+      // Sem snapshot, apenas mostra renderização atual
+      gl_FragColor = newColor;
+      return;
+    }
+    
+    // Tem snapshot - faz transição
+    vec4 oldColor = texture2D(tOld, uv);
+    
+    // Calcula qual bloco este pixel pertence
+    vec2 blockCoord = floor(uv * uResolution / uBlockSize);
+    
+    // Distância do centro (normalizada)
+    vec2 center = uResolution / (uBlockSize * 2.0);
+    float distFromCenter = length(blockCoord - center) / length(center);
+    
+    // Adiciona aleatoriedade por bloco
+    float blockRandom = random(blockCoord) * 0.3;
+    
+    // Progresso para este bloco específico (0.0 = centro, 1.0 = bordas)
+    float blockProgress = distFromCenter - blockRandom;
+    
+    // FASE 1: Wave de efeitos (0.0 - 0.5 do progress global)
+    // FASE 2: Reveal do novo conteúdo (0.5 - 1.0 do progress global)
+    
+    // Quando a wave chega neste bloco
+    float waveThreshold = blockProgress * 0.5;
+    // Quando o reveal chega neste bloco
+    float revealThreshold = 0.5 + (blockProgress * 0.5);
+    
+    vec4 finalColor;
+    
+    if (uProgress < waveThreshold) {
+      // Antes da wave - mostra snapshot antigo sem alteração
+      finalColor = oldColor;
+      
+    } else if (uProgress < waveThreshold + 0.15) {
+      // Wave passando - efeitos visuais no snapshot antigo
+      float waveProgress = (uProgress - waveThreshold) / 0.15;
+      
+      // Pixelação progressiva
+      float pixelSize = uBlockSize * (1.0 + waveProgress * 3.0);
+      vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
+      vec4 pixelated = texture2D(tOld, pixelatedUV);
+      
+      // Efeitos visuais
+      pixelated.rgb *= 0.6 + 0.4 * (1.0 - waveProgress);
+      
+      // Scanlines animadas
+      float scanline = sin(uv.y * uResolution.y * 0.5 + uProgress * 30.0) * 0.5 + 0.5;
+      pixelated.rgb += vec3(0.2, 0.4, 0.8) * scanline * waveProgress * 0.8;
+      
+      // Glitch
+      float glitch = random(blockCoord + floor(uProgress * 20.0));
+      pixelated.rgb += vec3(0.15, 0.35, 0.55) * glitch * waveProgress * 0.5;
+      
+      // Brilho da wave
+      float wavePeak = sin(waveProgress * 3.14159);
+      pixelated.rgb += vec3(0.4, 0.7, 1.0) * wavePeak * 1.2;
+      
+      finalColor = pixelated;
+      
+    } else if (uProgress < revealThreshold) {
+      // Após wave, antes do reveal - snapshot distorcido
+      float pixelSize = uBlockSize * 4.0;
+      vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
+      vec4 distorted = texture2D(tOld, pixelatedUV);
+      distorted.rgb *= 0.4 + 0.3 * random(blockCoord + floor(uProgress * 10.0));
+      
+      // Mantém scanlines sutis
+      float scanline = sin(uv.y * uResolution.y * 0.5 + uProgress * 20.0) * 0.5 + 0.5;
+      distorted.rgb += vec3(0.1, 0.2, 0.4) * scanline * 0.3;
+      
+      finalColor = distorted;
+      
+    } else if (uProgress < revealThreshold + 0.15) {
+      // Reveal em progresso - transição do antigo para novo
+      float revealProgress = (uProgress - revealThreshold) / 0.15;
+      
+      // Snapshot antigo distorcido
+      float pixelSize = uBlockSize * 4.0;
+      vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
+      vec4 oldDistorted = texture2D(tOld, pixelatedUV);
+      oldDistorted.rgb *= 0.4;
+      
+      // Fade suave para o novo
+      finalColor = mix(oldDistorted, newColor, revealProgress);
+      
+      // Brilho durante reveal
+      float revealGlow = sin(revealProgress * 3.14159);
+      finalColor.rgb += vec3(0.4, 0.7, 1.0) * revealGlow * 0.6;
+      
+    } else {
+      // Completamente revelado - conteúdo novo
+      finalColor = newColor;
+    }
+    
+    gl_FragColor = finalColor;
+  }
+`;
+
+// ====================================
 // 🌪️ PARTICLE SYSTEM SHADERS
 // ====================================
 
@@ -641,6 +774,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [useARCamera, setUseARCamera] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
   const [bgTextureEnabled, setBgTextureEnabled] = useState(false); // Controla se a textura de fundo está ativa
+  const [isTransitioning, setIsTransitioning] = useState(false); // Controla se está em transição entre câmeras
+  const [transitionProgress, setTransitionProgress] = useState(0); // 0.0 a 1.0 - progresso da transição
+  const transitionShaderRef = useRef<ShaderPass | null>(null); // Ref para o shader de transição
+  const transitionSnapshotRef = useRef<THREE.Texture | null>(null); // Ref para o snapshot antes da transição
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null); // Ref para o renderer
   const sceneRef = useRef<THREE.Scene | null>(null); // Ref para a cena Three.js
   const bgTextureRef = useRef<THREE.Texture | null>(null); // Ref para a textura de fundo carregada
   const sceneObjectsRef = useRef<Array<{ 
@@ -752,7 +890,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     points: THREE.Points;
     parentObject: THREE.Object3D;
   }>>(new Map());
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
   const [particlesEnabled, setParticlesEnabled] = useState(true);
   const [particleDensity, setParticleDensity] = useState(1.0); // 0.5 - 2.0
@@ -850,6 +987,53 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       bloomPassRef.current.threshold = bloomThreshold;
     }
   }, [bloomThreshold, useARCamera]);
+
+  // 🕰️ Anima a transição de câmera
+  useEffect(() => {
+    if (!isTransitioning) return;
+    
+    const duration = 1200; // ms - duração da transição
+    const startTime = Date.now();
+    
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1.0);
+      
+      setTransitionProgress(progress);
+      
+      // Atualiza o shader
+      if (transitionShaderRef.current) {
+        transitionShaderRef.current.uniforms.uProgress.value = progress;
+      }
+      
+      if (progress < 1.0) {
+        requestAnimationFrame(animate);
+      } else {
+        // Transição completa
+        setIsTransitioning(false);
+        setTransitionProgress(0);
+        if (transitionShaderRef.current) {
+          transitionShaderRef.current.enabled = false;
+          transitionShaderRef.current.uniforms.uHasOldTexture.value = false;
+          transitionShaderRef.current.uniforms.tOld.value = null;
+        }
+        // Limpa o snapshot
+        if (transitionSnapshotRef.current) {
+          transitionSnapshotRef.current.dispose();
+          transitionSnapshotRef.current = null;
+        }
+        console.log('✅ Transição de câmera completa');
+      }
+    };
+    
+    // Habilita o shader e inicia a animação
+    if (transitionShaderRef.current) {
+      transitionShaderRef.current.enabled = true;
+      transitionShaderRef.current.uniforms.uProgress.value = 0;
+    }
+    
+    animate();
+  }, [isTransitioning]);
 
   // 🌐 Atualiza Fresnel Power do shader equirectangular
   useEffect(() => {
@@ -1608,6 +1792,34 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         setBgTextureEnabled(false);
         console.log('🔲 Background só desativada (environment ativo)');
       }
+    }
+  };
+
+  // 🕰️ Função para capturar snapshot da renderização atual antes da transição
+  const captureTransitionSnapshot = () => {
+    if (!rendererRef.current || !transitionShaderRef.current) {
+      console.warn('⚠️ Renderer ou shader de transição não disponível para snapshot');
+      return;
+    }
+
+    try {
+      // Captura o canvas atual como textura
+      const canvas = rendererRef.current.domElement;
+      const snapshot = new THREE.CanvasTexture(canvas);
+      snapshot.needsUpdate = true;
+      
+      // Limpa snapshot anterior se existir
+      if (transitionSnapshotRef.current) {
+        transitionSnapshotRef.current.dispose();
+      }
+      
+      transitionSnapshotRef.current = snapshot;
+      transitionShaderRef.current.uniforms.tOld.value = snapshot;
+      transitionShaderRef.current.uniforms.uHasOldTexture.value = true;
+      
+      console.log('📸 Snapshot capturado para transição');
+    } catch (error) {
+      console.error('❌ Erro ao capturar snapshot:', error);
     }
   };
 
@@ -2733,6 +2945,19 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         console.log('✅ DeviceMotion listener adicionado');
       }
 
+      // Captura snapshot ANTES de fazer qualquer mudança
+      captureTransitionSnapshot();
+
+      // Desativa o background texture ao ativar câmera AR
+      if (bgTextureEnabled) {
+        toggleBackgroundTexture(false);
+        console.log('🔲 Background desativado automaticamente ao ativar câmera AR');
+      }
+
+      // Inicia a transição visual
+      console.log('🕰️ Iniciando transição para câmera AR');
+      setIsTransitioning(true);
+
       setUseARCamera(true);
       isInitialOrientationSet.current = false; // Reset para capturar nova orientação inicial
       console.log('✅ AR Camera ativada');
@@ -2815,6 +3040,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   };
 
   const stopARCamera = () => {
+    // Captura snapshot ANTES de fazer qualquer mudança
+    captureTransitionSnapshot();
+    
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
@@ -2822,9 +3050,20 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
     window.removeEventListener('deviceorientation', handleDeviceOrientation);
     window.removeEventListener('devicemotion', handleDeviceMotion);
+    
+    // Inicia a transição visual
+    console.log('🕰️ Iniciando transição para câmera principal');
+    setIsTransitioning(true);
+    
     setUseARCamera(false);
     setIsVideoReady(false);
     isInitialOrientationSet.current = false;
+    
+    // Reativa o background texture ao voltar para câmera principal (se cena estiver ativa)
+    if (sceneEnabled && bgTextureRef.current) {
+      toggleBackgroundTexture(true);
+      console.log('🖼️ Background reativado automaticamente ao voltar para câmera principal');
+    }
   };
 
   const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
@@ -3038,6 +3277,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 texture.mapping = THREE.EquirectangularReflectionMapping;
                 bgTextureRef.current = texture;
                 console.log('✅ Textura HDR carregada:', texturePath);
+                
+                // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
+                if (sceneRef.current && !useARCamera) {
+                  sceneRef.current.environment = texture;
+                  sceneRef.current.background = texture;
+                  setBgTextureEnabled(true);
+                  console.log('🖼️ Background texture ativado automaticamente');
+                }
               },
               undefined,
               (error) => {
@@ -3053,6 +3300,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 texture.mapping = THREE.EquirectangularReflectionMapping;
                 bgTextureRef.current = texture;
                 console.log('✅ Textura carregada:', texturePath);
+                
+                // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
+                if (sceneRef.current && !useARCamera) {
+                  sceneRef.current.environment = texture;
+                  sceneRef.current.background = texture;
+                  setBgTextureEnabled(true);
+                  console.log('🖼️ Background texture ativado automaticamente');
+                }
               },
               undefined,
               (error) => {
@@ -3163,6 +3418,25 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         composer.addPass(vignettePass);
         vignettePassRef.current = vignettePass; // Armazena ref para controle via UI
         console.log('🎨 Vignette effect adicionado');
+        
+        // 🕰️ Camera Transition Pass - Efeito de desfragmentação
+        const transitionShader = {
+          uniforms: {
+            tDiffuse: { value: null },
+            tOld: { value: null },
+            uProgress: { value: 0.0 },
+            uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+            uBlockSize: { value: 20.0 }, // Tamanho dos blocos de pixel
+            uHasOldTexture: { value: false },
+          },
+          vertexShader: cameraTransitionVertexShader,
+          fragmentShader: cameraTransitionFragmentShader,
+        };
+        const transitionPass = new ShaderPass(transitionShader);
+        transitionPass.enabled = false; // Desabilitado por padrão
+        composer.addPass(transitionPass);
+        transitionShaderRef.current = transitionPass;
+        console.log('🕰️ Camera transition effect adicionado');
 
         const loader = new PLYLoader();
         const gltfLoader = new GLTFLoader();
@@ -3537,6 +3811,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           camera.aspect = containerRef.current.clientWidth / containerRef.current.clientHeight;
           camera.updateProjectionMatrix();
           renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
+          
+          // Atualiza resolução do shader de transição
+          if (transitionShaderRef.current) {
+            transitionShaderRef.current.uniforms.uResolution.value.set(
+              containerRef.current.clientWidth,
+              containerRef.current.clientHeight
+            );
+          }
         };
         window.addEventListener('resize', handleResize);
 

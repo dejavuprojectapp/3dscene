@@ -330,7 +330,7 @@ const cameraTransitionFragmentShader = `
       return;
     }
     
-    // Tem snapshot - faz transição
+    // Tem snapshot - faz transição com ÚNICA WAVE
     vec4 oldColor = texture2D(tOld, uv);
     
     // Calcula qual bloco este pixel pertence
@@ -346,13 +346,8 @@ const cameraTransitionFragmentShader = `
     // Progresso para este bloco específico (0.0 = centro, 1.0 = bordas)
     float blockProgress = distFromCenter - blockRandom;
     
-    // FASE 1: Wave de efeitos (0.0 - 0.5 do progress global)
-    // FASE 2: Reveal do novo conteúdo (0.5 - 1.0 do progress global)
-    
-    // Quando a wave chega neste bloco
-    float waveThreshold = blockProgress * 0.5;
-    // Quando o reveal chega neste bloco
-    float revealThreshold = 0.5 + (blockProgress * 0.5);
+    // ÚNICA WAVE: Transição direta do antigo para novo (0.0 - 1.0)
+    float waveThreshold = blockProgress;
     
     vec4 finalColor;
     
@@ -360,64 +355,34 @@ const cameraTransitionFragmentShader = `
       // Antes da wave - mostra snapshot antigo sem alteração
       finalColor = oldColor;
       
-    } else if (uProgress < waveThreshold + 0.15) {
-      // Wave passando - efeitos visuais no snapshot antigo
-      float waveProgress = (uProgress - waveThreshold) / 0.15;
+    } else if (uProgress < waveThreshold + 0.2) {
+      // Wave passando - transição com efeitos visuais
+      float waveProgress = (uProgress - waveThreshold) / 0.2;
       
       // Pixelação progressiva
-      float pixelSize = uBlockSize * (1.0 + waveProgress * 3.0);
+      float pixelSize = uBlockSize * (1.0 + waveProgress * 2.0);
       vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
-      vec4 pixelated = texture2D(tOld, pixelatedUV);
+      vec4 oldPixelated = texture2D(tOld, pixelatedUV);
       
-      // Efeitos visuais
-      pixelated.rgb *= 0.6 + 0.4 * (1.0 - waveProgress);
+      // Mix do antigo para novo com efeitos
+      vec4 mixed = mix(oldPixelated, newColor, waveProgress);
       
       // Scanlines animadas
-      float scanline = sin(uv.y * uResolution.y * 0.5 + uProgress * 30.0) * 0.5 + 0.5;
-      pixelated.rgb += vec3(0.2, 0.4, 0.8) * scanline * waveProgress * 0.8;
+      float scanline = sin(uv.y * uResolution.y * 0.5 + uProgress * 25.0) * 0.5 + 0.5;
+      mixed.rgb += vec3(0.2, 0.4, 0.8) * scanline * (1.0 - waveProgress) * 0.6;
       
-      // Glitch
-      float glitch = random(blockCoord + floor(uProgress * 20.0));
-      pixelated.rgb += vec3(0.15, 0.35, 0.55) * glitch * waveProgress * 0.5;
+      // Glitch sutil
+      float glitch = random(blockCoord + floor(uProgress * 15.0));
+      mixed.rgb += vec3(0.15, 0.35, 0.55) * glitch * (1.0 - waveProgress) * 0.4;
       
       // Brilho da wave
       float wavePeak = sin(waveProgress * 3.14159);
-      pixelated.rgb += vec3(0.4, 0.7, 1.0) * wavePeak * 1.2;
+      mixed.rgb += vec3(0.4, 0.7, 1.0) * wavePeak * 0.8;
       
-      finalColor = pixelated;
-      
-    } else if (uProgress < revealThreshold) {
-      // Após wave, antes do reveal - snapshot distorcido
-      float pixelSize = uBlockSize * 4.0;
-      vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
-      vec4 distorted = texture2D(tOld, pixelatedUV);
-      distorted.rgb *= 0.4 + 0.3 * random(blockCoord + floor(uProgress * 10.0));
-      
-      // Mantém scanlines sutis
-      float scanline = sin(uv.y * uResolution.y * 0.5 + uProgress * 20.0) * 0.5 + 0.5;
-      distorted.rgb += vec3(0.1, 0.2, 0.4) * scanline * 0.3;
-      
-      finalColor = distorted;
-      
-    } else if (uProgress < revealThreshold + 0.15) {
-      // Reveal em progresso - transição do antigo para novo
-      float revealProgress = (uProgress - revealThreshold) / 0.15;
-      
-      // Snapshot antigo distorcido
-      float pixelSize = uBlockSize * 4.0;
-      vec2 pixelatedUV = floor(uv * uResolution / pixelSize) * pixelSize / uResolution;
-      vec4 oldDistorted = texture2D(tOld, pixelatedUV);
-      oldDistorted.rgb *= 0.4;
-      
-      // Fade suave para o novo
-      finalColor = mix(oldDistorted, newColor, revealProgress);
-      
-      // Brilho durante reveal
-      float revealGlow = sin(revealProgress * 3.14159);
-      finalColor.rgb += vec3(0.4, 0.7, 1.0) * revealGlow * 0.6;
+      finalColor = mixed;
       
     } else {
-      // Completamente revelado - conteúdo novo
+      // Após wave - conteúdo novo completamente revelado
       finalColor = newColor;
     }
     
@@ -840,12 +805,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const lastGyroLogRef = useRef(0); // Timestamp do último log (para throttle)
   const gyroActiveRef = useRef(false); // Flag ref para gyro ativo (evita closure issues)
   const [gyroVerboseLog, setGyroVerboseLog] = useState(false); // Controla logs detalhados
-  const [smoothingFactor, setSmoothingFactor] = useState(0.15); // Estado para controlar UI do slider (aumentado para movimento mais responsivo)
+  const [smoothingFactor, setSmoothingFactor] = useState(0.24); // Estado para controlar UI do slider (aumentado para movimento mais responsivo)
   
   // 🎯 Suavização de posição (low-pass filter para evitar jitter)
   const targetPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo calculada do device
   const currentPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição atual suavizada
-  const smoothingFactorRef = useRef(0.15); // Fator de suavização (0.05 = suave, 0.3 = responsivo)
+  const smoothingFactorRef = useRef(0.24); // Fator de suavização (0.05 = suave, 0.3 = responsivo)
   const debugInfoRef = useRef<DebugInfo>({
     camera: { x: 0, y: 0, z: 0 },
     cameraRotation: { x: 0, y: 0, z: 0 },
@@ -866,7 +831,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   });
   const [debugInfo, setDebugInfo] = useState<DebugInfo>(debugInfoRef.current);
   const [showCameraPrompt, setShowCameraPrompt] = useState(true);
-  const [showDebugOverlay, setShowDebugOverlay] = useState(true);
+  const [showDebugOverlay, setShowDebugOverlay] = useState(false);
   const [sceneEnabled, setSceneEnabled] = useState(false); // Controla se a cena está ativa (inicia desabilitada)
   const deviceMotionRef = useRef({ x: 0, y: 0, z: 0 });
   const initialOrientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
@@ -897,7 +862,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [bloomThreshold, setBloomThreshold] = useState(0.2);
   const bloomPassRef = useRef<UnrealBloomPass | null>(null);
   const bloomFadeAnimationRef = useRef<number | null>(null); // ID da animação de fade do bloom
-  const isDejavuTransitioningRef = useRef(false); // Flag: indica que Dejavu está em transição
   // Luzes
   const [ambientIntensity, setAmbientIntensity] = useState(1.5);
   const [pointIntensity, setPointIntensity] = useState(2);
@@ -3087,7 +3051,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     const startTime = performance.now();
     const startPos = camera.position.clone();
 
-    // Posição alvo: origem (0, 0, 0) - direto no centro
+    // 🎯 Posição alvo: origem (0, 0, 0) - direto no centro
     const globePosition = new THREE.Vector3(0, 0, 0);
     const targetPos = new THREE.Vector3(0, 0, 0);
 
@@ -3096,8 +3060,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     const endLookAt = new THREE.Vector3(0, 0, 0);     // Centro exato
     const currentLookAt = new THREE.Vector3();
 
+    // 📍 Distância de referência para disparo: quando faltar 1.70 unidades
+    const triggerDistance = 1.70;
+    const initialDistance = startPos.length();
+
     console.log('🎬 DEJAVU: Iniciando travelling cinematográfico');
     console.log('  📍 Posição inicial:', startPos);
+    console.log('  📏 Distância inicial:', initialDistance.toFixed(2));
+    console.log('  🎯 Disparo quando faltar:', triggerDistance.toFixed(2) + ' unidades');
     console.log('  🎯 Posição alvo: Vector3(0, 0, 0)');
     console.log('  👁️ LookAt inicial:', startLookAt);
     console.log('  👁️ LookAt final:', endLookAt);
@@ -3122,13 +3092,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       currentLookAt.lerpVectors(startLookAt, endLookAt, smoothT);
       camera.lookAt(currentLookAt);
 
-      // 🎯 Quando estiver bem próximo do destino (85%), encerra cena e recarrega no modo câmera principal
-      if (t >= 0.85 && !hasTransitioned) {
+      // 📍 Verifica distância restante até o alvo
+      const remainingDistance = camera.position.length();
+
+      // 🎯 Quando faltar 0.50 unidades, dispara transição instantânea
+      if (remainingDistance <= triggerDistance && !hasTransitioned) {
         hasTransitioned = true;
-        console.log('🎬 DEJAVU: Próximo do destino - encerrando e recarregando cena...');
-        
-        // Ativa flag de transição Dejavu
-        isDejavuTransitioningRef.current = true;
+        console.log(`🎬 DEJAVU: Distância restante ${remainingDistance.toFixed(2)} ≤ ${triggerDistance} - disparando transição rápida...`);
         
         // Ativa câmera principal (botão de "Câmera Principal")
         setRenderingCamera('main');
@@ -3138,24 +3108,17 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         if (isMobile) {
           gyroActiveRef.current = true; // 🔗 Ponte direta Device → Camera
           setGyroscopeMode(true);
-          console.log('  📡 Gyroscópio ATIVADO - Bridge Device → Camera estabelecida');
-          console.log('    - gyroActiveRef.current:', gyroActiveRef.current);
-          console.log('    - renderingCamera: main');
-          console.log('    - Device orientation já capturando dados em background');
+          console.log('  📡 Gyroscópio ATIVADO');
         }
         
         // Ativa background texture
         setBgTextureEnabled(true);
         console.log('  🖼️ Background texture ativado');
         
-        // Encerra cena atual e recarrega nova cena IMEDIATAMENTE (em paralelo)
+        // Recarrega cena DIRETAMENTE (sem flag de espera)
         setSceneEnabled(false);
-        console.log('  ❌ Cena atual encerrada');
-        
-        // Recarrega nova cena sem esperar (carrega em paralelo)
         setSceneEnabled(true);
-        console.log('  🔄 Nova cena sendo carregada em paralelo...');
-        console.log('  ⏳ Aguardando textura carregar para completar transição...');
+        console.log('  ⚡ Cena recarregada instantaneamente');
       }
 
       if (t < 1) {
@@ -3931,13 +3894,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                  
-                  // 🎬 Se estiver em transição Dejavu, apenas loga que a nova cena está pronta
-                  if (isDejavuTransitioningRef.current) {
-                    isDejavuTransitioningRef.current = false; // Reset flag
-                    console.log('🎬 DEJAVU: Textura HDR carregada! Nova cena criada por cima da AR.');
-                    console.log('  ✅ AR camera e gyro permanecem ativos em background');
-                  }
                 }
               },
               undefined,
@@ -3961,13 +3917,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                  
-                  // 🎬 Se estiver em transição Dejavu, apenas loga que a nova cena está pronta
-                  if (isDejavuTransitioningRef.current) {
-                    isDejavuTransitioningRef.current = false; // Reset flag
-                    console.log('🎬 DEJAVU: Textura carregada! Nova cena criada por cima da AR.');
-                    console.log('  ✅ AR camera e gyro permanecem ativos em background');
-                  }
                 }
               },
               undefined,
@@ -4092,7 +4041,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             tOld: { value: null },
             uProgress: { value: 0.0 },
             uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
-            uBlockSize: { value: 20.0 }, // Tamanho dos blocos de pixel
+            uBlockSize: { value: 8.0 }, // Tamanho dos blocos de pixel - menor = mais blocos
             uHasOldTexture: { value: false },
           },
           vertexShader: cameraTransitionVertexShader,
@@ -4136,21 +4085,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 model.position.set(0, 0, 0); // Nasce na origem
                 model.name = fileName;
                 
-                // 🔄 Inverte normais do sphere.glb para efeito de skybox interno
+                // 🌐 Detecta sphere.glb
                 const isSphere = fileName.toLowerCase().includes('sphere.glb');
                 if (isSphere) {
-                  console.log('🌐 Detectado sphere.glb - invertendo normais para skybox interno');
-                  model.traverse((child: THREE.Object3D) => {
-                    const mesh = child as THREE.Mesh;
-                    if (mesh.isMesh && mesh.geometry) {
-                      // Inverte a geometria no eixo X
-                      mesh.geometry.scale(-1, 1, 1);
-                      mesh.userData.normalState = 'inverted'; // Marca como invertido
-                      console.log('✅ Normais invertidas para:', mesh.name || 'mesh sem nome');
-                    }
-                  });
-                  // Adiciona ao Set de GLBs com normais invertidas
-                  setInvertedNormalsGLBs(prev => new Set(prev).add(fileName));
+                  console.log('🌐 sphere.glb detectado - configurando shader HDRI...');
                 }
                 
                 // � Aplica shader PBR customizado aos GLBs
@@ -4175,6 +4113,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   visible: true,
                   brightness: 1.0 // Brilho inicial
                 });
+                
+                // 🌐 Aplica shader equirectangular automaticamente ao sphere.glb
+                if (isSphere) {
+                  toggleEquirectangularShader(fileName, true);
+                  setEquirectUseMetal(false);
+                  console.log('✅ Shader HDRI equirectangular ativado e Metal PBR desativado para sphere.glb');
+                }
                 
                 // Cleanup: modelo adicionado à cena, referências temporárias podem ser liberadas
                 console.log(`🧹 GLB loader: recursos temporários liberados para ${fileName}`);
@@ -4842,13 +4787,30 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             if (renderingCamera === 'ar') {
               // 🎥 PRÉ-AÇÃO: Executa travelling cinematográfico antes de transicionar
               console.log('🎬 Botão Câmera Principal clicado - Iniciando pré-ação cinematográfica');
-              travelCameraToCenterOnly(1800); // Animação de 1.8s
               
-              // Aguarda a animação chegar em 85% antes de transicionar
-              setTimeout(() => {
-                console.log('🎬 Pré-ação completa - Executando transição para câmera principal');
-                stopARCamera();
-              }, 1800 * 0.85); // 85% da duração (1530ms)
+              // � Monitora posição da câmera para disparar em 0.50 unidades
+              const camera = activeCameraRef.current as THREE.PerspectiveCamera;
+              const initialDistance = camera.position.length();
+              const triggerDistance = 1.70;
+              const animationDuration = 1800;
+              
+              console.log('  📏 Distância inicial:', initialDistance.toFixed(2));
+              console.log('  🎯 Disparo quando faltar:', triggerDistance.toFixed(2) + ' unidades');
+              
+              travelCameraToCenterOnly(animationDuration);
+              
+              // Monitora distância em loop até atingir trigger
+              const checkDistance = setInterval(() => {
+                const currentDistance = camera.position.length();
+                if (currentDistance <= triggerDistance) {
+                  clearInterval(checkDistance);
+                  console.log(`🎬 Distância ${currentDistance.toFixed(2)} ≤ ${triggerDistance} - Executando transição rápida`);
+                  stopARCamera();
+                }
+              }, 16); // Verifica a cada frame (~60fps)
+              
+              // Timeout de segurança para limpar interval
+              setTimeout(() => clearInterval(checkDistance), animationDuration + 500);
             } else if (useARCamera) {
               // Se AR já está ativa em background, apenas muda renderização
               setRenderingCamera('ar');
@@ -5011,15 +4973,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
       {/* Botões - canto inferior esquerdo */}
       <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
-        {/* Botão Dejavu - Animação cinematográfica para origem */}
-        <button
-          onClick={() => travelCameraToOrigin(1800)}
-          className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-bold text-xs sm:text-sm shadow-lg transition-all transform hover:scale-105"
-          title="Animação cinematográfica da câmera para a origem (0,0,0)"
-        >
-          🎬 DEJAVU
-        </button>
-        
         {/* Botão para toggle debug overlay */}
         <button
           onClick={() => setShowDebugOverlay(!showDebugOverlay)}

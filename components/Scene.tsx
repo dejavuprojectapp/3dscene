@@ -3331,23 +3331,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     dejavuStartPosRef.current.copy(camera.position);
     console.log('🎬 DEJAVU - Posição inicial:', dejavuStartPosRef.current);
 
-    // PASSO 2: Calcula posição final
-    // Direção da câmera até o centro (0,0,0)
-    const centerPos = new THREE.Vector3(0, 0, 0);
-    const direction = new THREE.Vector3()
-      .subVectors(centerPos, dejavuStartPosRef.current)
-      .normalize();
-
-    // Distância final da câmera ao centro
-    const finalDistance = 5; // Ajuste fino
-
-    // Posição final: centro + direção invertida * distância
-    dejavuTargetPosRef.current
-      .copy(centerPos)
-      .addScaledVector(direction, -finalDistance);
-    
-    // Força Z = 0 exatamente
-    dejavuTargetPosRef.current.z = 0;
+    // PASSO 2: Define posição final no centro absoluto (0, 0, 0)
+    dejavuTargetPosRef.current.set(0, 0, 0);
 
     console.log('🎯 DEJAVU - Posição final:', dejavuTargetPosRef.current);
 

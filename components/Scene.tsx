@@ -805,6 +805,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [useARCamera, setUseARCamera] = useState(false);
+  const [renderingCamera, setRenderingCamera] = useState<'main' | 'ar'>('main'); // Controla qual câmera renderiza na tela
   const [isVideoReady, setIsVideoReady] = useState(false);
   const [gyroscopeMode, setGyroscopeMode] = useState(false); // Controle por rotação do dispositivo
   const [isMobile, setIsMobile] = useState(false); // Detecta se é dispositivo móvel
@@ -814,6 +815,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const transitionShaderRef = useRef<ShaderPass | null>(null); // Ref para o shader de transição
   const transitionSnapshotRef = useRef<THREE.Texture | null>(null); // Ref para o snapshot antes da transição
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null); // Ref para o renderer
+  const composerRef = useRef<EffectComposer | null>(null); // Ref para o EffectComposer
   const sceneRef = useRef<THREE.Scene | null>(null); // Ref para a cena Three.js
   const bgTextureRef = useRef<THREE.Texture | null>(null); // Ref para a textura de fundo carregada
   const sceneObjectsRef = useRef<Array<{ 
@@ -835,6 +837,15 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const deviceOrientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
   const gyroOffsetRef = useRef({ azimuth: 0, polar: 0 }); // Offset acumulado do gyroscópio
   const lastGyroUpdateRef = useRef(0); // Timestamp da última atualização
+  const lastGyroLogRef = useRef(0); // Timestamp do último log (para throttle)
+  const gyroActiveRef = useRef(false); // Flag ref para gyro ativo (evita closure issues)
+  const [gyroVerboseLog, setGyroVerboseLog] = useState(false); // Controla logs detalhados
+  const [smoothingFactor, setSmoothingFactor] = useState(0.15); // Estado para controlar UI do slider (aumentado para movimento mais responsivo)
+  
+  // 🎯 Suavização de posição (low-pass filter para evitar jitter)
+  const targetPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo calculada do device
+  const currentPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição atual suavizada
+  const smoothingFactorRef = useRef(0.15); // Fator de suavização (0.05 = suave, 0.3 = responsivo)
   const debugInfoRef = useRef<DebugInfo>({
     camera: { x: 0, y: 0, z: 0 },
     cameraRotation: { x: 0, y: 0, z: 0 },
@@ -1029,18 +1040,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     console.groupEnd();
   }, [ambientIntensity, pointIntensity, directionalIntensity]);
 
-  // Desativa bloom quando AR camera está ativa
+  // Desativa bloom quando está renderizando câmera AR
   useEffect(() => {
     if (bloomPassRef.current) {
-      if (useARCamera) {
+      if (renderingCamera === 'ar') {
         bloomPassRef.current.enabled = false;
-        console.log('🌟 Bloom desativado (AR Camera ativa)');
+        console.log('🌟 Bloom desativado (renderizando AR Camera)');
       } else if (bloomEnabled) {
         bloomPassRef.current.enabled = true;
         console.log('🌟 Bloom ativado');
       }
     }
-  }, [useARCamera, bloomEnabled]);
+  }, [renderingCamera, bloomEnabled]);
 
   // Atualiza intensidade do bloom
   useEffect(() => {
@@ -3105,7 +3116,19 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       setIsTransitioning(true);
 
       setUseARCamera(true);
+      setRenderingCamera('ar'); // Define AR como câmera de renderização
       isInitialOrientationSet.current = false; // Reset para capturar nova orientação inicial
+      
+      // 🌐 Mostra o sphere.glb ao ativar AR (para efeito de skybox)
+      const sphereObject = sceneObjectsRef.current.find(obj => 
+        obj.name.toLowerCase().includes('sphere.glb')
+      );
+      if (sphereObject) {
+        sphereObject.visible = true;
+        sphereObject.object.visible = true;
+        console.log('👁️ sphere.glb mostrado automaticamente ao ativar AR');
+      }
+      
       console.log('✅ AR Camera ativada');
       
     } catch (error) {
@@ -3189,35 +3212,54 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     // Captura snapshot ANTES de fazer qualquer mudança
     captureTransitionSnapshot();
     
-    if (videoRef.current?.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
+    // 🎥 MUDANÇA: NÃO para a stream de vídeo - ela continua rodando em background
+    // Apenas muda qual câmera está renderizando
+    console.log('📹 Mantendo stream de vídeo e sensores ativos em background');
     
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('deviceorientation', handleDeviceOrientation);
-      window.removeEventListener('devicemotion', handleDeviceMotion);
-    }
+    // 📱 MANTÉM os event listeners ativos para continuar capturando device orientation
+    // (Não remove mais os listeners)
     
     // Inicia a transição visual
     console.log('🕰️ Iniciando transição para câmera principal');
     setIsTransitioning(true);
     
-    setUseARCamera(false);
-    setIsVideoReady(false);
-    isInitialOrientationSet.current = false;
+    // Muda apenas a câmera de renderização, mas mantém AR camera ativa
+    setRenderingCamera('main');
+    // setUseARCamera(false); // ❌ NÃO desativa mais - mantém em background
     
     // Reativa o background texture ao voltar para câmera principal (se cena estiver ativa)
     if (sceneEnabled && bgTextureRef.current) {
       toggleBackgroundTexture(true);
       console.log('🖼️ Background reativado automaticamente ao voltar para câmera principal');
     }
+    
+    // 🎯 Ativa automaticamente o gyroscópio ao voltar para câmera principal (se mobile)
+    if (isMobile && !gyroscopeMode) {
+      console.log('📱 Ativando gyroscópio automaticamente ao sair da AR');
+      startGyroscopeMode();
+    }
+    
+    // 🌐 Esconde o sphere.glb ao voltar para câmera principal
+    const sphereObject = sceneObjectsRef.current.find(obj => 
+      obj.name.toLowerCase().includes('sphere.glb')
+    );
+    if (sphereObject) {
+      sphereObject.visible = false;
+      sphereObject.object.visible = false;
+      console.log('👁️ sphere.glb escondido automaticamente ao voltar para câmera principal');
+    }
   };
 
   const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-    // Salva orientação inicial como referência
-    if (!isInitialOrientationSet.current && (useARCamera || gyroscopeMode)) {
+    // Atualiza orientação atual sempre
+    deviceOrientationRef.current = {
+      alpha: event.alpha || 0,  // yaw (rotação Z) - 0 a 360°
+      beta: event.beta || 0,    // pitch (rotação X) - -180 a 180°
+      gamma: event.gamma || 0,  // roll (rotação Y) - -90 a 90°
+    };
+    
+    // Salva orientação inicial como referência (na primeira chamada)
+    if (!isInitialOrientationSet.current) {
       initialOrientationRef.current = {
         alpha: event.alpha || 0,
         beta: event.beta || 0,
@@ -3225,14 +3267,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       };
       isInitialOrientationSet.current = true;
       console.log('📍 Orientação inicial definida:', initialOrientationRef.current);
+      console.log('🎯 Gyroscope captando dados corretamente!');
+      console.log('🔗 PONTE DEVICE → CAMERA ESTABELECIDA!');
+      console.log('📊 Dados chegando em TEMPO REAL a cada frame do device');
+      console.log('⚡ Loop de animação vai processar esses dados agora!');
     }
-
-    deviceOrientationRef.current = {
-      alpha: event.alpha || 0,  // yaw (rotação Z)
-      beta: event.beta || 0,    // pitch (rotação X)
-      gamma: event.gamma || 0,  // roll (rotação Y)
-    };
-    // console.log('📲 Device orientation atualizado:', deviceOrientationRef.current); // Log comentado para não poluir
   };
 
   const handleDeviceMotion = (event: DeviceMotionEvent) => {
@@ -3247,7 +3286,82 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   };
 
-  // � Funções de Gyroscope Mode
+  /**
+   * 🧮 FUNÇÃO MATEMÁTICA LEGADA: Converte Device Orientation (gyro) em Rotação de Câmera 3D
+   * ⚠️ DEPRECADA - Use updateOrientationWithQuaternion para nova implementação
+   * 
+   * ENTRADA:
+   * - currentOrientation: { alpha, beta, gamma } - orientação atual do device (graus)
+   * - initialOrientation: { alpha, beta, gamma } - orientação inicial como referência (graus)
+   * - currentOffset: { azimuth, polar } - offset acumulado da rotação (radianos)
+   * - radius: distância da câmera ao centro (unidades three.js)
+   * - sensitivity: multiplicador de sensibilidade (default: 0.02)
+   * 
+   * SAÍDA:
+   * - position: { x, y, z } - nova posição da câmera em coordenadas cartesianas
+   * - offset: { azimuth, polar } - novo offset acumulado (radianos)
+   * 
+   * MATEMÁTICA:
+   * 1. Calcula delta (diferença) da orientação atual vs inicial
+   * 2. Converte delta de graus para radianos
+   * 3. Aplica sensibilidade e acumula no offset
+   * 4. Limita polar para evitar gimbal lock (0 < polar < π)
+   * 5. Converte coordenadas esféricas (azimuth, polar, radius) → cartesianas (x, y, z)
+   * 
+   * COORDENADAS ESFÉRICAS → CARTESIANAS:
+   * - x = radius × sin(polar) × cos(azimuth)
+   * - y = radius × cos(polar)
+   * - z = radius × sin(polar) × sin(azimuth)
+   */
+  const convertGyroToCamera = (
+    currentOrientation: { alpha: number; beta: number; gamma: number },
+    initialOrientation: { alpha: number; beta: number; gamma: number },
+    currentOffset: { azimuth: number; polar: number },
+    radius: number,
+    sensitivity: number = 0.02
+  ): { 
+    position: { x: number; y: number; z: number };
+    offset: { azimuth: number; polar: number };
+    deltas: { alpha: number; beta: number; gamma: number };
+  } => {
+    // PASSO 1: Calcula diferença da orientação (delta)
+    let deltaAlpha = currentOrientation.alpha - initialOrientation.alpha;
+    let deltaBeta = currentOrientation.beta - initialOrientation.beta;
+    let deltaGamma = currentOrientation.gamma - initialOrientation.gamma;
+    
+    // PASSO 2: Normaliza deltaAlpha para o intervalo -180° a 180°
+    // (previne saltos ao cruzar 0°↔360°)
+    if (deltaAlpha > 180) deltaAlpha -= 360;
+    if (deltaAlpha < -180) deltaAlpha += 360;
+    
+    // PASSO 3: Converte graus → radianos e aplica sensibilidade
+    const yaw = THREE.MathUtils.degToRad(deltaAlpha) * sensitivity;   // rotação horizontal
+    const pitch = THREE.MathUtils.degToRad(-deltaBeta) * sensitivity; // rotação vertical (invertido)
+    const roll = THREE.MathUtils.degToRad(deltaGamma) * sensitivity;  // rotação lateral
+    
+    // PASSO 4: Acumula rotação no offset (integração)
+    const newAzimuth = currentOffset.azimuth + yaw;
+    let newPolar = currentOffset.polar + pitch;
+    
+    // PASSO 5: Limita polar para evitar gimbal lock
+    // polar deve estar entre 0 e π (0° a 180°)
+    // Deixa uma margem de 0.01 rad nas extremidades
+    newPolar = Math.max(0.01, Math.min(Math.PI - 0.01, newPolar));
+    
+    // PASSO 6: Converte coordenadas esféricas → cartesianas
+    // Fórmulas da conversão esférica padrão:
+    const x = radius * Math.sin(newPolar) * Math.cos(newAzimuth);
+    const y = radius * Math.cos(newPolar);
+    const z = radius * Math.sin(newPolar) * Math.sin(newAzimuth);
+    
+    return {
+      position: { x, y, z },
+      offset: { azimuth: newAzimuth, polar: newPolar },
+      deltas: { alpha: deltaAlpha, beta: deltaBeta, gamma: deltaGamma }
+    };
+  };
+
+  // 📱 Funções de Gyroscope Mode
   const startGyroscopeMode = async () => {
     console.log('📱 Iniciando Gyroscope Mode...');
     
@@ -3261,6 +3375,33 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     // Reseta orientação inicial
     isInitialOrientationSet.current = false;
     
+    // 🎮 Desabilita OrbitControls para prevenir conflito com gyro
+    if (controlsRef.current) {
+      controlsRef.current.enabled = false;
+      console.log('🎮 OrbitControls desabilitados - Gyro agora é input principal');
+    }
+    
+    // 📐 Captura posição atual da câmera e converte para coordenadas esféricas
+    // Isso garante transição suave sem saltos bruscos
+    if (activeCameraRef.current) {
+      const cam = activeCameraRef.current as THREE.PerspectiveCamera;
+      const pos = cam.position;
+      
+      // Converte posição cartesiana para esférica
+      const radius = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+      const azimuth = Math.atan2(pos.z, pos.x); // ângulo horizontal
+      const polar = Math.acos(pos.y / radius); // ângulo vertical
+      
+      gyroOffsetRef.current = { azimuth, polar };
+      
+      // 🎯 Inicializa posições de suavização com posição atual
+      currentPositionRef.current.copy(pos);
+      targetPositionRef.current.copy(pos);
+      
+      console.log('📐 Posição inicial capturada - azimuth:', azimuth.toFixed(3), 'polar:', polar.toFixed(3));
+      console.log('✨ Suavização inicializada na posição:', pos.x.toFixed(2), pos.y.toFixed(2), pos.z.toFixed(2));
+    }
+    
     // iOS 13+ requer permissão explícita
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
@@ -3269,16 +3410,30 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const permission = await (DeviceOrientationEvent as any).requestPermission();
         if (permission === 'granted') {
+          // Ativa o modo ANTES de adicionar listener
+          setGyroscopeMode(true);
+          gyroActiveRef.current = true; // 🔗 Flag ref - ponte direta para o loop de animação
+          
+          // Adiciona listener
           window.addEventListener('deviceorientation', handleDeviceOrientation);
           
-          // Reseta offsets e timestamp
-          gyroOffsetRef.current = { azimuth: 0, polar: 0 };
+          // Inicializa timestamp
           lastGyroUpdateRef.current = performance.now();
           
-          setGyroscopeMode(true);
           console.log('✅ Gyroscope Mode ativo (iOS)');
+          console.log('🔗 Ponte Device → Camera ATIVADA (via refs)');
+          console.log('👂 Listener adicionado, aguardando dados do sensor...');
+          console.log('📊 Estado atual:');
+          console.log('  - gyroActiveRef.current:', gyroActiveRef.current);
+          console.log('  - renderingCamera:', renderingCamera);
+          console.log('  - activeCameraRef:', activeCameraRef.current ? 'EXISTS' : 'NULL');
+          console.log('  - Controls desabilitados:', controlsRef.current ? !controlsRef.current.enabled : 'N/A');
         } else {
           console.warn('⚠️ Permissão DeviceOrientation negada');
+          // Reabilita controls se permissão negada
+          if (controlsRef.current) {
+            controlsRef.current.enabled = true;
+          }
           alert('Permissão de orientação negada. Ative nas configurações do navegador.');
         }
       } catch (error) {
@@ -3309,17 +3464,30 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         window.removeEventListener('deviceorientation', testHandler);
         
         if (orientationReceived) {
-          // Sensor funcionando, ativa o modo gyroscope
+          // Sensor funcionando, ativa o modo ANTES de adicionar listener permanente
+          setGyroscopeMode(true);
+          gyroActiveRef.current = true; // 🔗 Flag ref - ponte direta para o loop de animação
+          
+          // Adiciona listener permanente
           window.addEventListener('deviceorientation', handleDeviceOrientation);
           
-          // Reseta offsets e timestamp
-          gyroOffsetRef.current = { azimuth: 0, polar: 0 };
+          // Inicializa timestamp
           lastGyroUpdateRef.current = performance.now();
           
-          setGyroscopeMode(true);
           console.log('✅ Gyroscope Mode ativo (Android)');
+          console.log('🔗 Ponte Device → Camera ATIVADA (via refs)');
+          console.log('👂 Listener adicionado, aguardando dados do sensor...');
+          console.log('📊 Estado atual:');
+          console.log('  - gyroActiveRef.current:', gyroActiveRef.current);
+          console.log('  - renderingCamera:', renderingCamera);
+          console.log('  - activeCameraRef:', activeCameraRef.current ? 'EXISTS' : 'NULL');
+          console.log('  - Controls desabilitados:', controlsRef.current ? !controlsRef.current.enabled : 'N/A');
         } else {
           console.warn('⚠️ Sensor de orientação não está fornecendo dados');
+          // Reabilita controls se sensor não funcionar
+          if (controlsRef.current) {
+            controlsRef.current.enabled = true;
+          }
           alert('Sensor de orientação não está respondendo. Verifique se seu navegador tem permissão para acessar os sensores de movimento.');
         }
       } catch (error) {
@@ -3335,6 +3503,15 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
     }
     
+    // 🔗 Desativa ponte direta
+    gyroActiveRef.current = false;
+    
+    // 🎮 Reabilita OrbitControls (mouse/touch voltam a funcionar)
+    if (controlsRef.current) {
+      controlsRef.current.enabled = true;
+      console.log('🎮 OrbitControls reabilitados - Mouse/Touch voltam como input principal');
+    }
+    
     // Reseta offsets e estado
     gyroOffsetRef.current = { azimuth: 0, polar: 0 };
     lastGyroUpdateRef.current = 0;
@@ -3342,6 +3519,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     setGyroscopeMode(false);
     isInitialOrientationSet.current = false;
     console.log('✅ Gyroscope Mode desativado');
+    console.log('🔗 Ponte Device → Camera DESATIVADA');
   };
 
   // �🗑️ Função para limpar múltiplas cenas e objetos duplicados
@@ -3649,6 +3827,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
         // 🎨 Post-processing: Vignette (escurece os cantos)
         const composer = new EffectComposer(renderer);
+        composerRef.current = composer; // Armazena ref para acesso posterior
         composer.addPass(new RenderPass(scene, camera));
         
         // Bloom Pass (UnrealBloomPass)
@@ -3937,7 +4116,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
           // Gerencia background/environment baseado no modo AR
           if (sceneRef.current && bgTextureRef.current) {
-            if (useARCamera && bgTextureEnabled) {
+            if (renderingCamera === 'ar' && bgTextureEnabled) {
               // Modo AR: environment ativo, background transparente
               if (sceneRef.current.background !== null) {
                 sceneRef.current.background = null;
@@ -3946,7 +4125,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               if (sceneRef.current.environment !== bgTextureRef.current) {
                 sceneRef.current.environment = bgTextureRef.current;
               }
-            } else if (!useARCamera && bgTextureEnabled) {
+            } else if (renderingCamera === 'main' && bgTextureEnabled) {
               // Modo normal: ambos ativos
               if (sceneRef.current.background !== bgTextureRef.current) {
                 sceneRef.current.background = bgTextureRef.current;
@@ -3986,54 +4165,110 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           
           // 📷 Follow Camera: Rotaciona sistema de partículas para seguir câmera
           if (particleFollowCamera && particleSystemsRef.current.size > 0) {
-            const activeCamera = useARCamera ? cameraAR : camera;
+            const activeCamera = renderingCamera === 'ar' ? cameraAR : camera;
             particleSystemsRef.current.forEach((system) => {
               // Copia APENAS rotação da câmera para o sistema de partículas
               system.points.rotation.copy(activeCamera.rotation);
             });
           }
           
-          // 📱 Gyroscope Mode: Device orientation alimenta os controles (simula touch input)
-          if (gyroscopeMode && !useARCamera && controlsRef.current) {
-            const controls = controlsRef.current;
-            const { alpha, beta } = deviceOrientationRef.current;
-            const initial = initialOrientationRef.current;
+          // 📱 Gyroscope Mode: Ponte REAL-TIME Device Orientation → Three.js Camera
+          // Usa gyroActiveRef (ref) ao invés de gyroscopeMode (state) para evitar closure issues
+          if (gyroActiveRef.current && renderingCamera === 'main' && activeCameraRef.current) {
+            const cam = activeCameraRef.current as THREE.PerspectiveCamera;
             
-            console.log('📲 Gyroscope MODE ATIVO - alpha:', alpha.toFixed(2), 'beta:', beta.toFixed(2));
-            console.log('📍 Initial - alpha:', initial.alpha.toFixed(2), 'beta:', initial.beta.toFixed(2));
+            // Debug: Log periódico a cada 3 segundos
+            const now = performance.now();
+            if (lastGyroUpdateRef.current === 0 || (now - lastGyroUpdateRef.current) > 3000) {
+              console.log('⚡ PONTE ATIVA - DADOS EM TEMPO REAL');
+              console.log('  📱 Device (RAW):', deviceOrientationRef.current);
+              console.log('  🎯 gyroActiveRef:', gyroActiveRef.current);
+              console.log('  📷 Camera exists:', !!cam);
+              lastGyroUpdateRef.current = now;
+            }
             
-            // Calcula a diferença da orientação atual em relação à inicial
-            let deltaAlpha = alpha - initial.alpha;
-            let deltaBeta = beta - initial.beta;
+            // 🌍 IMPLEMENTAÇÃO CORRETA: Device orientation → Posição orbital da câmera
+            // Mapeia device orientation diretamente para coordenadas esféricas
             
-            // Normaliza deltaAlpha para o intervalo -180 a 180
+            const { alpha, beta, gamma } = deviceOrientationRef.current;
+            const { alpha: initAlpha, beta: initBeta } = initialOrientationRef.current;
+            
+            // PASSO 1: Calcula delta (diferença da orientação atual vs inicial)
+            let deltaAlpha = alpha - initAlpha;
+            let deltaBeta = beta - initBeta;
+            
+            // Normaliza deltaAlpha para -180° a +180°
             if (deltaAlpha > 180) deltaAlpha -= 360;
             if (deltaAlpha < -180) deltaAlpha += 360;
             
-            console.log('🔄 Gyroscope delta - alpha:', deltaAlpha.toFixed(2), 'beta:', deltaBeta.toFixed(2));
+            // PASSO 2: Mapeia device angles → coordenadas esféricas
+            // alpha (0-360°) → azimuth (ângulo horizontal) - INVERTIDO para match intuição
+            // beta (-180 a 180°) → polar (ângulo vertical)
+            const sensitivity = 2.0; // Aumenta sensibilidade para movimento perceptível
+            const azimuth = THREE.MathUtils.degToRad(-deltaAlpha * sensitivity); // 🔄 Negativo = flip horizontal
+            const polarOffset = THREE.MathUtils.degToRad(deltaBeta * sensitivity);
             
-            // Sensibilidade: converte graus em radianos para rotação
-            const sensitivity = 0.02; // Aumentado para ser mais perceptível
+            // Polar base (câmera olhando horizontalmente) = π/2
+            let polar = Math.PI / 2 + polarOffset;
             
-            const rotationLeft = deltaAlpha * sensitivity;
-            const rotationUp = -deltaBeta * sensitivity;
+            // Limita polar para evitar gimbal lock (0.1 rad margem)
+            polar = Math.max(0.1, Math.min(Math.PI - 0.1, polar));
             
-            console.log('🎯 Aplicando rotação - left:', rotationLeft.toFixed(4), 'up:', rotationUp.toFixed(4));
+            // PASSO 3: Converte esférica → cartesiana
+            const radius = cam.position.length(); // Mantém distância atual
             
-            // Usa os métodos do OrbitControls para rotacionar (como se fosse touch/mouse)
-            // rotateLeft: rotação horizontal (azimuth) - positivo = esquerda
-            // rotateUp: rotação vertical (polar) - positivo = para cima
-            controls.rotateLeft(rotationLeft);
-            controls.rotateUp(rotationUp);
+            targetPositionRef.current.set(
+              radius * Math.sin(polar) * Math.cos(azimuth),
+              radius * Math.cos(polar),
+              radius * Math.sin(polar) * Math.sin(azimuth)
+            );
             
-            // Atualiza a orientação inicial para a próxima frame
-            initialOrientationRef.current.alpha = alpha;
-            initialOrientationRef.current.beta = beta;
+            // PASSO 4: Aplica suavização (lerp) para evitar movimento brusco
+            currentPositionRef.current.lerp(
+              targetPositionRef.current,
+              smoothingFactorRef.current
+            );
+            
+            // PASSO 5: Atualiza posição da câmera
+            cam.position.copy(currentPositionRef.current);
+            cam.lookAt(0, 0, 0); // Sempre olha para o centro
+            
+            // 🔍 LOG DETALHADO: Conexão completa Device → Câmera (throttle: 500ms)
+            if (gyroVerboseLog && (now - lastGyroLogRef.current) > 500) {
+              lastGyroLogRef.current = now;
+              
+              console.log('📲 ===== GYRO POSITION DEBUG (SPHERICAL MODE) =====');
+              console.log('📱 Device Orientation (raw):');
+              console.log('  alpha:', deviceOrientationRef.current.alpha.toFixed(2), '° | beta:', deviceOrientationRef.current.beta.toFixed(2), '° | gamma:', deviceOrientationRef.current.gamma.toFixed(2), '°');
+              console.log('🔄 Delta (from initial):');
+              console.log('  Δalpha:', deltaAlpha.toFixed(2), '° | Δbeta:', deltaBeta.toFixed(2), '°');
+              console.log('🎯 Spherical Coordinates:');
+              console.log('  azimuth:', azimuth.toFixed(3), 'rad (', (azimuth * 180 / Math.PI).toFixed(1), '°)');
+              console.log('  polar:', polar.toFixed(3), 'rad (', (polar * 180 / Math.PI).toFixed(1), '°)');
+              console.log('  radius:', radius.toFixed(3));
+              console.log('📷 Camera Position (target):');
+              console.log('  target x:', targetPositionRef.current.x.toFixed(3), '| y:', targetPositionRef.current.y.toFixed(3), '| z:', targetPositionRef.current.z.toFixed(3));
+              console.log('📷 Camera Position (smoothed):');
+              console.log('  current x:', cam.position.x.toFixed(3), '| y:', cam.position.y.toFixed(3), '| z:', cam.position.z.toFixed(3));
+              console.log('✨ Smoothing Factor:', smoothingFactorRef.current);
+              console.log('🎚️ Sensitivity:', sensitivity);
+              console.log('==================================');
+            }
           }
           
           // Atualiza controles apenas para câmera principal
-          if (!useARCamera && controlsRef.current) {
+          if (renderingCamera === 'main' && controlsRef.current) {
             controlsRef.current.update();
+          }
+          
+          // 🎥 DINÂMICA: Atualiza qual câmera o composer vai renderizar
+          if (composerRef.current && composerRef.current.passes.length > 0) {
+            const renderPass = composerRef.current.passes[0] as RenderPass;
+            if (renderPass.camera) {
+              // Define qual câmera renderizar baseado em renderingCamera
+              const cameraToRender = renderingCamera === 'ar' ? cameraAR : camera;
+              renderPass.camera = cameraToRender;
+            }
           }
           
           // Renderiza a cena com post-processing (vignette)
@@ -4292,7 +4527,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         className="absolute inset-0 w-full h-full"
         style={{ 
           objectFit: 'cover',
-          display: useARCamera && isVideoReady ? 'block' : 'none',
+          display: renderingCamera === 'ar' && isVideoReady ? 'block' : 'none',
           zIndex: 1,
         }}
       />
@@ -4368,36 +4603,134 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         
         <button
           onClick={() => {
-            if (useARCamera) {
+            if (renderingCamera === 'ar') {
               stopARCamera();
+            } else if (useARCamera) {
+              // Se AR já está ativa em background, apenas muda renderização
+              setRenderingCamera('ar');
+              captureTransitionSnapshot();
+              setIsTransitioning(true);
+              if (bgTextureEnabled && bgTextureRef.current) {
+                toggleBackgroundTexture(false);
+              }
+              
+              // 🌐 Mostra o sphere.glb ao voltar para AR
+              const sphereObject = sceneObjectsRef.current.find(obj => 
+                obj.name.toLowerCase().includes('sphere.glb')
+              );
+              if (sphereObject) {
+                sphereObject.visible = true;
+                sphereObject.object.visible = true;
+                console.log('👁️ sphere.glb mostrado ao voltar para AR');
+              }
             } else {
               startARCamera();
             }
           }}
           className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors"
         >
-          {useARCamera ? '📷 Câmera Principal' : '📱 Câmera AR'}
+          {renderingCamera === 'ar' ? '📷 Câmera Principal' : '📱 Câmera AR'}
         </button>
         
-        {/* Botão para Gyroscope Mode (apenas mobile) */}
-        {isMobile && !useARCamera && (
-          <button
-            onClick={() => {
-              if (gyroscopeMode) {
-                stopGyroscopeMode();
-              } else {
-                startGyroscopeMode();
-              }
-            }}
-            className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors ${
-              gyroscopeMode
-                ? 'bg-orange-500 hover:bg-orange-600 text-white'
-                : 'bg-gray-600 hover:bg-gray-700 text-white'
-            }`}
-            title={gyroscopeMode ? 'Desativar controle por rotação' : 'Ativar controle por rotação'}
-          >
-            {gyroscopeMode ? '📱 Gyro ON' : '📱 Gyro OFF'}
-          </button>
+        {/* Botão para Gyroscope Mode (apenas mobile e quando não está renderizando AR) */}
+        {isMobile && renderingCamera === 'main' && (
+          <>
+            <button
+              onClick={() => {
+                if (gyroscopeMode) {
+                  stopGyroscopeMode();
+                } else {
+                  startGyroscopeMode();
+                }
+              }}
+              className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors ${
+                gyroscopeMode
+                  ? 'bg-orange-500 hover:bg-orange-600 text-white'
+                  : 'bg-gray-600 hover:bg-gray-700 text-white'
+              }`}
+              title={gyroscopeMode ? 'Desativar controle por rotação' : 'Ativar controle por rotação'}
+            >
+              {gyroscopeMode ? '📱 Gyro ON' : '📱 Gyro OFF'}
+            </button>
+            
+            {/* Botão de Debug Gyro - Aparece apenas quando gyro está ativo */}
+            {gyroscopeMode && (
+              <>
+                <button
+                  onClick={() => {
+                    console.log('🔍 ===== GYRO DEBUG SNAPSHOT =====');
+                    console.log('🔗 PONTE STATUS:');
+                    console.log('  gyroActiveRef.current (REF):', gyroActiveRef.current);
+                    console.log('  gyroscopeMode (STATE):', gyroscopeMode);
+                    console.log('  renderingCamera:', renderingCamera);
+                    console.log('  activeCameraRef.current:', activeCameraRef.current ? 'EXISTS' : 'NULL');
+                    console.log('📱 DEVICE DATA:');
+                    console.log('  Current:', deviceOrientationRef.current);
+                    console.log('  Initial:', initialOrientationRef.current);
+                    console.log('  isInitialOrientationSet:', isInitialOrientationSet.current);
+                    console.log('🎯 SUAVIZAÇÃO (Low-Pass Filter):');
+                    console.log('  targetPosition:', targetPositionRef.current);
+                    console.log('  currentPosition (smoothed):', currentPositionRef.current);
+                    console.log('  smoothingFactor:', smoothingFactorRef.current);
+                    console.log('📷 CAMERA:');
+                    console.log('  Position:', activeCameraRef.current?.position);
+                    console.log('  Rotation (euler):', activeCameraRef.current?.rotation);
+                    console.log('  Rotation (degrees):', {
+                      x: ((activeCameraRef.current?.rotation.x || 0) * 180 / Math.PI).toFixed(1),
+                      y: ((activeCameraRef.current?.rotation.y || 0) * 180 / Math.PI).toFixed(1),
+                      z: ((activeCameraRef.current?.rotation.z || 0) * 180 / Math.PI).toFixed(1),
+                    });
+                    console.log('✅ CONDIÇÕES PARA LOOP:');
+                    console.log('  gyroActiveRef.current:', gyroActiveRef.current);
+                    console.log('  renderingCamera === main:', renderingCamera === 'main');
+                    console.log('  activeCameraRef exists:', !!activeCameraRef.current);
+                    console.log('  TODAS CONDIÇÕES:', gyroActiveRef.current && renderingCamera === 'main' && activeCameraRef.current);
+                    console.log('=================================');
+                    alert('✅ Snapshot do Gyro salvo no console (F12)');
+                  }}
+                  className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-2 rounded-lg font-semibold text-xs shadow-lg transition-colors"
+                  title="Fazer snapshot dos valores do gyroscópio no console"
+                >
+                  🔍 Snapshot
+                </button>
+                
+                <button
+                  onClick={() => setGyroVerboseLog(!gyroVerboseLog)}
+                  className={`px-3 py-2 rounded-lg font-semibold text-xs shadow-lg transition-colors ${
+                    gyroVerboseLog
+                      ? 'bg-yellow-500 hover:bg-yellow-600 text-black'
+                      : 'bg-gray-700 hover:bg-gray-600 text-white'
+                  }`}
+                  title={gyroVerboseLog ? 'Desativar logs contínuos' : 'Ativar logs contínuos (console)'}
+                >
+                  {gyroVerboseLog ? '📋 Logs ON' : '📋 Logs OFF'}
+                </button>
+                
+                {/* Slider para ajustar Smoothing Factor (SLERP) */}
+                <div className="flex flex-col gap-1 bg-gray-800 px-3 py-2 rounded-lg shadow-lg">
+                  <label className="text-white text-xs font-semibold">
+                    ✨ Suavização: {smoothingFactor.toFixed(2)}
+                  </label>
+                  <input
+                    type="range"
+                    min="0.01"
+                    max="0.3"
+                    step="0.01"
+                    value={smoothingFactor}
+                    onChange={(e) => {
+                      const newValue = parseFloat(e.target.value);
+                      setSmoothingFactor(newValue);
+                      smoothingFactorRef.current = newValue;
+                      console.log('✨ Smoothing factor ajustado:', newValue);
+                    }}
+                    className="w-32 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    title="Controla a suavização do movimento (0.01 = muito suave, 0.3 = responsivo)"
+                  />
+                  <span className="text-gray-400 text-xs">0.01 (suave) → 0.3 (rápido)</span>
+                </div>
+              </>
+            )}
+          </>
         )}
         
         {/* Botão para exportar cena para JSON */}
@@ -4422,6 +4755,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         {useARCamera && isVideoReady && (
           <div className="bg-green-500 text-white px-3 py-2 rounded-lg text-xs font-semibold">
             ✅ AR Ativa
+          </div>
+        )}
+        {gyroscopeMode && renderingCamera === 'main' && (
+          <div className="bg-orange-500 text-white px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-white animate-pulse"></div>
+            📱 Gyro Controlando
           </div>
         )}
       </div>
@@ -4461,9 +4800,23 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           <p className="ml-2">X: {debugInfo.cameraRotation.x}°</p>
           <p className="ml-2">Y: {debugInfo.cameraRotation.y}°</p>
           <p className="ml-2">Z: {debugInfo.cameraRotation.z}°</p>
+          
+          {/* Gyroscope Mode Info */}
+          {gyroscopeMode && (
+            <>
+              <p className="text-[10px] mt-1 text-green-300">🌀 Gyroscope Mode: ACTIVE</p>
+              <p className="ml-2 text-[9px]">Azimuth: {gyroOffsetRef.current.azimuth.toFixed(3)} rad ({(gyroOffsetRef.current.azimuth * 180 / Math.PI).toFixed(1)}°)</p>
+              <p className="ml-2 text-[9px]">Polar: {gyroOffsetRef.current.polar.toFixed(3)} rad ({(gyroOffsetRef.current.polar * 180 / Math.PI).toFixed(1)}°)</p>
+              <p className="text-[10px] mt-1 text-pink-300">🧭 Device Raw:</p>
+              <p className="ml-2 text-[9px]">α (yaw): {deviceOrientationRef.current.alpha.toFixed(1)}°</p>
+              <p className="ml-2 text-[9px]">β (pitch): {deviceOrientationRef.current.beta.toFixed(1)}°</p>
+              <p className="ml-2 text-[9px]">γ (roll): {deviceOrientationRef.current.gamma.toFixed(1)}°</p>
+            </>
+          )}
+          
           {useARCamera && isVideoReady && videoRef.current && (
             <>
-              <p className="text-[10px] mt-1 text-cyan-300">📱 Video Stream:</p>
+              <p className="text-[10px] mt-1 text-cyan-300">� Video Stream: {renderingCamera === 'ar' ? '(VISIBLE)' : '(BACKGROUND)'}</p>
               <p className="ml-2 text-[9px]">Res: {videoRef.current.videoWidth}×{videoRef.current.videoHeight}</p>
               <p className="ml-2 text-[9px]">Aspect: {(videoRef.current.videoWidth / videoRef.current.videoHeight).toFixed(3)}</p>
               <p className="text-[10px] mt-1 text-pink-300">🧭 Device Orientation:</p>

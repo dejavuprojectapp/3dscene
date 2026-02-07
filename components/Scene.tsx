@@ -2994,37 +2994,26 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
   // 🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
   const startARExperience = async () => {
-    console.log('🎬 Iniciando experiência AR...');
+    console.log('🎬 Iniciando experiência AR (carregando tudo em background)...');
     
-    // PASSO 1: Ativar cena com câmera principal se ainda não estiver ativa
+    // PASSO 1: Ativar cena com câmera principal (background)
     if (!sceneEnabled) {
-      console.log('📦 PASSO 1: Carregando cena 3D com câmera principal...');
+      console.log('📦 PASSO 1: Carregando cena 3D em background...');
       setSceneEnabled(true);
-      
-      // Aguarda a cena carregar completamente
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      console.log('✅ Cena 3D carregada com câmera principal');
     }
     
     // PASSO 2: Ativar câmera AR
-    console.log('📹 PASSO 2: Entrando no modo câmera AR...');
+    console.log('📹 PASSO 2: Ativando câmera AR...');
     await startARCamera();
-    console.log('✅ Modo câmera AR ativado');
     
-    // PASSO 3: Ativar background texture automaticamente e depois desativar
-    console.log('🖼️ PASSO 3: Ativando background texture...');
-    setTimeout(() => {
-      if (bgTextureRef.current) {
-        toggleBackgroundTexture(true);
-        console.log('✅ Background texture ativado');
-        
-        // Ação final: Desativa background texture após 1 segundo
-        setTimeout(() => {
-          toggleBackgroundTexture(false);
-          console.log('🔲 Ação final: Background texture desativado automaticamente');
-        }, 1000);
-      }
-    }, 500); // Pequeno delay para garantir que a cena AR está pronta
+    // PASSO 3: Estado final - Background texture desativado
+    console.log('🖼️ PASSO 3: Indo direto para estado final (background texture OFF)...');
+    if (bgTextureRef.current) {
+      toggleBackgroundTexture(false);
+      console.log('✅ Estado final alcançado: Background texture desativado');
+    }
+    
+    console.log('🎉 Experiência AR pronta!');
   };
 
   // Inicializa webcam/câmera traseira

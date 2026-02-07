@@ -999,6 +999,19 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   }, [useARCamera]);
   
+  // 📱 Auto-inicia AR Camera quando a cena é ativada (mobile)
+  useEffect(() => {
+    if (sceneEnabled && isMobile && !useARCamera && sceneHasStartedOnce.current) {
+      console.log('🎬 Cena ativada - iniciando AR Camera automaticamente...');
+      // Pequeno delay para garantir que a cena esteja totalmente inicializada
+      const timer = setTimeout(() => {
+        startARCamera();
+      }, 500);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [sceneEnabled, isMobile, useARCamera]);
+  
   useEffect(() => {
     if (vignettePassRef.current) {
       vignettePassRef.current.uniforms['offset'].value = vignetteOffset;

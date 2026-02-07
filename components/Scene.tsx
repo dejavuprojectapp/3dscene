@@ -3346,8 +3346,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       .copy(centerPos)
       .addScaledVector(direction, -finalDistance);
     
-    // Força Z = 0 (ou próximo de 0)
-    dejavuTargetPosRef.current.z = 0.1;
+    // Força Z = 0 exatamente
+    dejavuTargetPosRef.current.z = 0;
 
     console.log('🎯 DEJAVU - Posição final:', dejavuTargetPosRef.current);
 

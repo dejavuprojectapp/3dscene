@@ -818,6 +818,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const composerRef = useRef<EffectComposer | null>(null); // Ref para o EffectComposer
   const sceneRef = useRef<THREE.Scene | null>(null); // Ref para a cena Three.js
   const bgTextureRef = useRef<THREE.Texture | null>(null); // Ref para a textura de fundo carregada
+  const bgTextureButtonRef = useRef<HTMLButtonElement | null>(null); // Ref para o botão de background texture
   const sceneObjectsRef = useRef<Array<{ 
     name: string; 
     object: THREE.Object3D; 
@@ -2996,11 +2997,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const startARExperience = async () => {
     console.log('🎬 Iniciando experiência AR...');
     
-    // PASSO 0: Define modo AR ANTES de carregar a cena
-    // Isso previne que a textura seja ativada automaticamente
-    setRenderingCamera('ar');
-    console.log('📹 Modo AR definido (renderingCamera = ar)');
-    
     // PASSO 1: Ativar cena se ainda não estiver ativa
     if (!sceneEnabled) {
       console.log('📦 Carregando cena com objetos e textura...');
@@ -3012,12 +3008,21 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     await startARCamera();
     
     // PASSO 3: Garante que background texture está desabilitado em modo AR
-    // Força desativação caso a textura tenha sido ativada
-    if (sceneRef.current && bgTextureRef.current) {
-      sceneRef.current.background = null;
-      setBgTextureEnabled(false);
-      console.log('🔲 Background texture desabilitado (environment mantido para iluminação)');
-    }
+    // Aguarda um pouco para textura carregar antes de inverter estado
+    setTimeout(() => {
+      if (bgTextureRef.current && bgTextureEnabled) {
+        toggleBackgroundTexture(false);
+        console.log('🔲 Background texture desabilitado automaticamente após iniciar AR');
+      }
+    }, 500);
+    
+    // PASSO 4 (ÚLTIMA AÇÃO): Clica no botão de background texture para sincronizar UI
+    setTimeout(() => {
+      if (bgTextureButtonRef.current && bgTextureRef.current) {
+        console.log('🔘 Clicando no botão de background texture (última ação)');
+        bgTextureButtonRef.current.click();
+      }
+    }, 800);
   };
 
   // Inicializa webcam/câmera traseira
@@ -3732,17 +3737,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 console.log('✅ Textura HDR carregada:', texturePath);
                 
                 // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
-                if (sceneRef.current && !useARCamera && renderingCamera !== 'ar') {
+                if (sceneRef.current && !useARCamera) {
                   sceneRef.current.environment = texture;
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                } else if (sceneRef.current) {
-                  // Em modo AR: apenas environment (iluminação), sem background
-                  sceneRef.current.environment = texture;
-                  sceneRef.current.background = null;
-                  setBgTextureEnabled(false);
-                  console.log('🌐 Environment ativo, background desabilitado (modo AR)');
                 }
               },
               undefined,
@@ -3761,17 +3760,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 console.log('✅ Textura carregada:', texturePath);
                 
                 // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
-                if (sceneRef.current && !useARCamera && renderingCamera !== 'ar') {
+                if (sceneRef.current && !useARCamera) {
                   sceneRef.current.environment = texture;
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                } else if (sceneRef.current) {
-                  // Em modo AR: apenas environment (iluminação), sem background
-                  sceneRef.current.environment = texture;
-                  sceneRef.current.background = null;
-                  setBgTextureEnabled(false);
-                  console.log('🌐 Environment ativo, background desabilitado (modo AR)');
                 }
               },
               undefined,
@@ -4988,6 +4981,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               {texturePath.split('/').pop()}
             </p>
             <button
+              ref={bgTextureButtonRef}
               onClick={() => toggleBackgroundTexture(!bgTextureEnabled)}
               disabled={!bgTextureRef.current}
               className={`w-full py-1 px-2 rounded text-[9px] font-semibold ${

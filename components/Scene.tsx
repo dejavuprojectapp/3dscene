@@ -896,6 +896,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [bloomIntensity, setBloomIntensity] = useState(1.5);
   const [bloomThreshold, setBloomThreshold] = useState(0.2);
   const bloomPassRef = useRef<UnrealBloomPass | null>(null);
+  const bloomFadeAnimationRef = useRef<number | null>(null); // ID da animação de fade do bloom
+  const isDejavuTransitioningRef = useRef(false); // Flag: indica que Dejavu está em transição
   // Luzes
   const [ambientIntensity, setAmbientIntensity] = useState(1.5);
   const [pointIntensity, setPointIntensity] = useState(2);
@@ -2999,8 +3001,83 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
   };
 
-  // 🎬 DEJAVU: Animação cinematográfica da câmera até a origem (0,0,0)
-  const travelCameraToOrigin = (duration: number = 2000) => {
+  // � Fade do Bloom: animação de 1.60 para 0 (efeito de fade out)
+  const fadeBloomOnMainCamera = () => {
+    if (!bloomPassRef.current) return;
+
+    // Cancela animação anterior se existir
+    if (bloomFadeAnimationRef.current) {
+      cancelAnimationFrame(bloomFadeAnimationRef.current);
+    }
+
+    const startIntensity = 1.60;
+    const endIntensity = 0;
+    const duration = 2000; // 2 segundos
+    const startTime = performance.now();
+
+    console.log('🌟 Iniciando fade do bloom: 1.60 → 0');
+
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - startTime;
+      let t = elapsed / duration;
+      t = Math.min(t, 1);
+
+      // Interpola intensidade do bloom
+      const currentIntensity = startIntensity + (endIntensity - startIntensity) * t;
+      setBloomIntensity(currentIntensity);
+
+      if (t < 1) {
+        bloomFadeAnimationRef.current = requestAnimationFrame(animate);
+      } else {
+        bloomFadeAnimationRef.current = null;
+        console.log('✅ Fade do bloom completo!');
+      }
+    };
+
+    animate();
+  };
+
+  // �🎬 DEJAVU: Animação cinematográfica da câmera até a origem (0,0,0)
+  // 🎥 Animação cinematográfica SEM transição de cena (usada no botão Câmera Principal)
+  const travelCameraToCenterOnly = (duration: number = 1800) => {
+    if (!activeCameraRef.current) {
+      console.warn('⚠️ Câmera não disponível para animação cinematográfica');
+      return;
+    }
+
+    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
+    const startTime = performance.now();
+    const startPos = camera.position.clone();
+    const targetPos = new THREE.Vector3(0, 0, 0);
+    const startLookAt = new THREE.Vector3(4, 2, 0);
+    const endLookAt = new THREE.Vector3(0, 0, 0);
+    const currentLookAt = new THREE.Vector3();
+
+    console.log('🎥 PRÉ-AÇÃO: Travelling cinematográfico até o centro');
+    console.log('  📍 Posição inicial:', startPos);
+    console.log('  🎯 Posição alvo: Vector3(0, 0, 0)');
+    console.log('  ⏱️ Duração:', duration + 'ms');
+
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - startTime;
+      let t = elapsed / duration;
+      t = Math.min(t, 1);
+      const smoothT = easeInOutCubic(t);
+      camera.position.lerpVectors(startPos, targetPos, smoothT);
+      currentLookAt.lerpVectors(startLookAt, endLookAt, smoothT);
+      camera.lookAt(currentLookAt);
+      if (t < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        console.log('✅ PRÉ-AÇÃO: Travelling completo! Câmera no centro.');
+      }
+    };
+    animate();
+  };
+
+  const travelCameraToOrigin = (duration: number = 1800) => {
     if (!activeCameraRef.current) {
       console.warn('⚠️ Câmera não disponível para animação Dejavu');
       return;
@@ -3010,25 +3087,23 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     const startTime = performance.now();
     const startPos = camera.position.clone();
 
-    // Posição alvo: origem (0, 0, 0)
+    // Posição alvo: origem (0, 0, 0) - direto no centro
     const globePosition = new THREE.Vector3(0, 0, 0);
+    const targetPos = new THREE.Vector3(0, 0, 0);
 
-    // Direção da câmera até o globo
-    const dir = new THREE.Vector3()
-      .subVectors(globePosition, startPos)
-      .normalize();
-
-    // Distância final da câmera ao globo (ajuste fino para não ficar dentro)
-    const finalDistance = 5;
-
-    const targetPos = new THREE.Vector3()
-      .copy(globePosition)
-      .addScaledVector(dir, -finalDistance);
+    // 🎥 LookAt cinematográfico: começa olhando com offset, termina no centro
+    const startLookAt = new THREE.Vector3(4, 2, 0);  // Offset lateral direito e para cima
+    const endLookAt = new THREE.Vector3(0, 0, 0);     // Centro exato
+    const currentLookAt = new THREE.Vector3();
 
     console.log('🎬 DEJAVU: Iniciando travelling cinematográfico');
     console.log('  📍 Posição inicial:', startPos);
-    console.log('  🎯 Posição alvo:', targetPos);
+    console.log('  🎯 Posição alvo: Vector3(0, 0, 0)');
+    console.log('  👁️ LookAt inicial:', startLookAt);
+    console.log('  👁️ LookAt final:', endLookAt);
     console.log('  ⏱️ Duração:', duration + 'ms');
+
+    let hasTransitioned = false; // Flag para garantir que só transiciona uma vez
 
     const animate = () => {
       const now = performance.now();
@@ -3043,8 +3118,45 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       // Interpola posição com easing
       camera.position.lerpVectors(startPos, targetPos, smoothT);
       
-      // Sempre olha para o centro (globo) - sensação de trilho
-      camera.lookAt(globePosition);
+      // 🎥 LookAt cinematográfico: move o ponto de vista gradualmente
+      currentLookAt.lerpVectors(startLookAt, endLookAt, smoothT);
+      camera.lookAt(currentLookAt);
+
+      // 🎯 Quando estiver bem próximo do destino (85%), encerra cena e recarrega no modo câmera principal
+      if (t >= 0.85 && !hasTransitioned) {
+        hasTransitioned = true;
+        console.log('🎬 DEJAVU: Próximo do destino - encerrando e recarregando cena...');
+        
+        // Ativa flag de transição Dejavu
+        isDejavuTransitioningRef.current = true;
+        
+        // Ativa câmera principal (botão de "Câmera Principal")
+        setRenderingCamera('main');
+        console.log('  📹 Câmera Principal ativada');
+        
+        // 📡 ATIVA EXPLICITAMENTE o gyroscópio para receber dados em real-time
+        if (isMobile) {
+          gyroActiveRef.current = true; // 🔗 Ponte direta Device → Camera
+          setGyroscopeMode(true);
+          console.log('  📡 Gyroscópio ATIVADO - Bridge Device → Camera estabelecida');
+          console.log('    - gyroActiveRef.current:', gyroActiveRef.current);
+          console.log('    - renderingCamera: main');
+          console.log('    - Device orientation já capturando dados em background');
+        }
+        
+        // Ativa background texture
+        setBgTextureEnabled(true);
+        console.log('  🖼️ Background texture ativado');
+        
+        // Encerra cena atual e recarrega nova cena IMEDIATAMENTE (em paralelo)
+        setSceneEnabled(false);
+        console.log('  ❌ Cena atual encerrada');
+        
+        // Recarrega nova cena sem esperar (carrega em paralelo)
+        setSceneEnabled(true);
+        console.log('  🔄 Nova cena sendo carregada em paralelo...');
+        console.log('  ⏳ Aguardando textura carregar para completar transição...');
+      }
 
       if (t < 1) {
         requestAnimationFrame(animate);
@@ -3064,6 +3176,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     if (!sceneEnabled) {
       console.log('📦 PASSO 1: Carregando cena 3D em background...');
       setSceneEnabled(true);
+      // 🌟 Aguarda um frame para o bloom ser criado, depois inicia o fade
+      requestAnimationFrame(() => {
+        fadeBloomOnMainCamera();
+      });
     }
     
     // PASSO 2: Ativar câmera AR
@@ -3311,6 +3427,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     console.log('🕰️ Iniciando transição para câmera principal');
     setIsTransitioning(true);
     
+    // 🌟 Inicia animação de fade do bloom (1.60 → 0)
+    fadeBloomOnMainCamera();
+    
     // Muda apenas a câmera de renderização, mas mantém AR camera ativa
     setRenderingCamera('main');
     // setUseARCamera(false); // ❌ NÃO desativa mais - mantém em background
@@ -3322,9 +3441,24 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
     
     // 🎯 Ativa automaticamente o gyroscópio ao voltar para câmera principal (se mobile)
-    if (isMobile && !gyroscopeMode) {
-      console.log('📱 Ativando gyroscópio automaticamente ao sair da AR');
-      startGyroscopeMode();
+    // CORREÇÃO: Sempre ativa o gyro se estiver em mobile, independente do estado anterior
+    if (isMobile) {
+      console.log('📱 Ativando gyroscópio automaticamente ao voltar para câmera principal');
+      
+      // Se o modo gyro já estava ativo, apenas garante que a ponte ref está ativa
+      if (gyroscopeMode) {
+        gyroActiveRef.current = true;
+        console.log('  🔗 Gyro já estava ativo - garantindo ponte Device → Camera');
+      } else {
+        // Se não estava ativo, inicia do zero
+        startGyroscopeMode();
+        console.log('  ▶️ Iniciando gyroscópio do zero');
+      }
+      
+      console.log('  📡 Estado gyro:');
+      console.log('    - gyroActiveRef.current:', gyroActiveRef.current);
+      console.log('    - gyroscopeMode (state):', gyroscopeMode);
+      console.log('    - renderingCamera: main');
     }
     
     // 🌐 Esconde o sphere.glb ao voltar para câmera principal
@@ -3797,6 +3931,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
+                  
+                  // 🎬 Se estiver em transição Dejavu, apenas loga que a nova cena está pronta
+                  if (isDejavuTransitioningRef.current) {
+                    isDejavuTransitioningRef.current = false; // Reset flag
+                    console.log('🎬 DEJAVU: Textura HDR carregada! Nova cena criada por cima da AR.');
+                    console.log('  ✅ AR camera e gyro permanecem ativos em background');
+                  }
                 }
               },
               undefined,
@@ -3820,6 +3961,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
+                  
+                  // 🎬 Se estiver em transição Dejavu, apenas loga que a nova cena está pronta
+                  if (isDejavuTransitioningRef.current) {
+                    isDejavuTransitioningRef.current = false; // Reset flag
+                    console.log('🎬 DEJAVU: Textura carregada! Nova cena criada por cima da AR.');
+                    console.log('  ✅ AR camera e gyro permanecem ativos em background');
+                  }
                 }
               },
               undefined,
@@ -4692,7 +4840,15 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         <button
           onClick={() => {
             if (renderingCamera === 'ar') {
-              stopARCamera();
+              // 🎥 PRÉ-AÇÃO: Executa travelling cinematográfico antes de transicionar
+              console.log('🎬 Botão Câmera Principal clicado - Iniciando pré-ação cinematográfica');
+              travelCameraToCenterOnly(1800); // Animação de 1.8s
+              
+              // Aguarda a animação chegar em 85% antes de transicionar
+              setTimeout(() => {
+                console.log('🎬 Pré-ação completa - Executando transição para câmera principal');
+                stopARCamera();
+              }, 1800 * 0.85); // 85% da duração (1530ms)
             } else if (useARCamera) {
               // Se AR já está ativa em background, apenas muda renderização
               setRenderingCamera('ar');
@@ -4857,7 +5013,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
         {/* Botão Dejavu - Animação cinematográfica para origem */}
         <button
-          onClick={() => travelCameraToOrigin(2500)}
+          onClick={() => travelCameraToOrigin(1800)}
           className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-bold text-xs sm:text-sm shadow-lg transition-all transform hover:scale-105"
           title="Animação cinematográfica da câmera para a origem (0,0,0)"
         >

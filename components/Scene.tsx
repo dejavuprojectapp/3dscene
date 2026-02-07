@@ -847,6 +847,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const targetPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo calculada do device
   const currentPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição atual suavizada
   const smoothingFactorRef = useRef(0.15); // Fator de suavização (0.05 = suave, 0.3 = responsivo)
+  
+  // 🌀 DEJAVU - Refs para animação cinematográfica de câmera
+  const dejavuAnimationRef = useRef<number | null>(null); // RequestAnimationFrame ID
+  const dejavuStartPosRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição inicial salva
+  const dejavuTargetPosRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo (origem)
+  const dejavuStartTimeRef = useRef(0); // Timestamp do início da animação
+  const dejavuCameraSwitchScheduledRef = useRef(false); // Flag para evitar múltiplos agendamentos
+  const [isDejavuAnimating, setIsDejavuAnimating] = useState(false); // Estado da animação
   const debugInfoRef = useRef<DebugInfo>({
     camera: { x: 0, y: 0, z: 0 },
     cameraRotation: { x: 0, y: 0, z: 0 },
@@ -2993,14 +3001,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     };
   }, []);
 
-  // � Função de easing cinematográfica (interpolação suave)
+  // � DEJAVU - Função de easing para movimento suave (curva cúbica)
   const easeInOutCubic = (t: number): number => {
     return t < 0.5
       ? 4 * t * t * t
       : 1 - Math.pow(-2 * t + 2, 3) / 2;
   };
 
-  // 🎬 Animação de travelling da câmera até a origem (0,0,0) - Estilo Dejavu
+  // 🌀 DEJAVU - Anima câmera até a origem (0, 0, 0) com movimento cinematográfico
   const travelCameraToOrigin = (duration: number = 2500) => {
     if (!activeCameraRef.current) {
       console.warn('⚠️ Câmera não disponível para animação Dejavu');
@@ -3008,51 +3016,118 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
 
     const camera = activeCameraRef.current as THREE.PerspectiveCamera;
-    const startTime = performance.now();
-    const startPos = camera.position.clone();
 
-    // Posição alvo: origem (0,0,0) com distância segura
-    const globePosition = new THREE.Vector3(0, 0, 0);
-    const finalDistance = 5; // Distância final da câmera à origem
+    // PASSO 1: Salva posição inicial
+    dejavuStartPosRef.current.copy(camera.position);
+    console.log('🌀 DEJAVU - Posição inicial salva:', {
+      x: dejavuStartPosRef.current.x.toFixed(2),
+      y: dejavuStartPosRef.current.y.toFixed(2),
+      z: dejavuStartPosRef.current.z.toFixed(2)
+    });
 
-    // Direção da câmera até o globo/origem
-    const dir = new THREE.Vector3()
-      .subVectors(globePosition, startPos)
-      .normalize();
+    // PASSO 2: Define posição alvo (próximo à origem, mas não exatamente em 0,0,0)
+    // Distância final: 5 unidades da origem para evitar clipping
+    const finalDistance = 5;
+    const direction = dejavuStartPosRef.current.clone().normalize();
+    dejavuTargetPosRef.current.copy(direction.multiplyScalar(finalDistance));
+    
+    console.log('🎯 DEJAVU - Posição alvo:', {
+      x: dejavuTargetPosRef.current.x.toFixed(2),
+      y: dejavuTargetPosRef.current.y.toFixed(2),
+      z: dejavuTargetPosRef.current.z.toFixed(2),
+      duration: duration + 'ms'
+    });
 
-    const targetPos = new THREE.Vector3()
-      .copy(globePosition)
-      .addScaledVector(dir, -finalDistance);
+    // PASSO 3: Inicia animação
+    dejavuStartTimeRef.current = performance.now();
+    setIsDejavuAnimating(true);
+    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag
 
-    console.log('🎬 Iniciando animação Dejavu');
-    console.log('  📍 Posição inicial:', startPos);
-    console.log('  🎯 Posição alvo:', targetPos);
-    console.log('  ⏱️ Duração:', duration, 'ms');
-
-    function animate() {
-      const now = performance.now();
-      const elapsed = now - startTime;
-
-      let t = elapsed / duration;
-      t = Math.min(t, 1);
-
-      const smoothT = easeInOutCubic(t);
-
-      // Interpola posição com easing suave
-      camera.position.lerpVectors(startPos, targetPos, smoothT);
-      
-      // Câmera sempre olha para a origem (cria sensação de trilho cinematográfico)
-      camera.lookAt(globePosition);
-
-      if (t < 1) {
-        requestAnimationFrame(animate);
-      } else {
-        console.log('✅ Animação Dejavu concluída');
-        console.log('  📍 Posição final:', camera.position);
-      }
+    // Desabilita gyroscópio se estiver ativo
+    if (gyroscopeMode) {
+      stopGyroscopeMode();
+      console.log('🎮 Gyroscópio desabilitado para animação Dejavu');
     }
 
+    // Desabilita OrbitControls temporariamente
+    if (controlsRef.current) {
+      controlsRef.current.enabled = false;
+      console.log('🎮 OrbitControls desabilitados para animação Dejavu');
+    }
+
+    // Função de animação (recursiva via requestAnimationFrame)
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - dejavuStartTimeRef.current;
+      let t = Math.min(elapsed / duration, 1); // Normaliza 0-1
+
+      // Aplica easing para movimento suave (não-linear)
+      t = easeInOutCubic(t);
+
+      // Interpola posição: lerp entre startPos e targetPos
+      const newPos = new THREE.Vector3().lerpVectors(
+        dejavuStartPosRef.current,
+        dejavuTargetPosRef.current,
+        t
+      );
+
+      camera.position.copy(newPos);
+      // Sempre olha para o centro (foco cinematográfico)
+      camera.lookAt(0, 0, 0);
+
+      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, agenda troca para câmera principal
+      if (t > 0.85 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
+        dejavuCameraSwitchScheduledRef.current = true; // Marca como agendado
+        
+        // Calcula delay baseado no tempo restante (sem delay adicional)
+        const timeToFinish = duration * (1 - t); // Tempo até t=1
+        
+        console.log('🎬 DEJAVU - Trocando para Câmera Principal ao final da animação (', timeToFinish.toFixed(0), 'ms)');
+        
+        setTimeout(() => {
+          if (renderingCamera === 'ar') {
+            console.log('📷 DEJAVU - Ativando Câmera Principal automaticamente');
+            stopARCamera();
+          }
+        }, timeToFinish);
+      }
+
+      // Continua animação ou finaliza
+      if (t < 1) {
+        dejavuAnimationRef.current = requestAnimationFrame(animate);
+      } else {
+        console.log('✅ DEJAVU - Animação concluída');
+        setIsDejavuAnimating(false);
+        dejavuCameraSwitchScheduledRef.current = false;
+        
+        // Reativa OrbitControls se não estiver em gyro mode
+        if (controlsRef.current && !gyroscopeMode) {
+          controlsRef.current.enabled = true;
+          console.log('🎮 OrbitControls reativados');
+        }
+      }
+    };
+
+    // Inicia loop de animação
     animate();
+  };
+
+  // 🌀 DEJAVU - Cancela animação em andamento
+  const cancelDejavuAnimation = () => {
+    if (dejavuAnimationRef.current !== null) {
+      cancelAnimationFrame(dejavuAnimationRef.current);
+      dejavuAnimationRef.current = null;
+    }
+    setIsDejavuAnimating(false);
+    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag de agendamento
+    
+    // Reativa OrbitControls
+    if (controlsRef.current && !gyroscopeMode) {
+      controlsRef.current.enabled = true;
+      console.log('🎮 OrbitControls reativados após cancelamento');
+    }
+    
+    console.log('🛑 DEJAVU - Animação cancelada');
   };
 
   // �🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
@@ -4727,17 +4802,24 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           {renderingCamera === 'ar' ? '📷 Câmera Principal' : '📱 Câmera AR'}
         </button>
         
-        {/* Botão Dejavu - Aparece apenas em modo AR */}
+        {/* Botão Dejavu - Animação cinematográfica para origem (apenas em modo AR) */}
         {renderingCamera === 'ar' && (
           <button
             onClick={() => {
-              console.log('🎬 Botão Dejavu clicado');
-              travelCameraToOrigin(2500);
+              if (isDejavuAnimating) {
+                cancelDejavuAnimation();
+              } else {
+                travelCameraToOrigin(2500); // 2.5 segundos de animação
+              }
             }}
-            className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-all transform hover:scale-105"
-            title="Animar câmera até a origem (0,0,0) com interpolação suave"
+            className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-all ${
+              isDejavuAnimating
+                ? 'bg-red-500 hover:bg-red-600 text-white scale-105'
+                : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white hover:scale-105'
+            }`}
+            title={isDejavuAnimating ? 'Cancelar animação Dejavu' : 'Animar câmera até o centro'}
           >
-            🌀 Dejavu
+            {isDejavuAnimating ? '🛑 Cancelar' : '🌀 Dejavu'}
           </button>
         )}
         

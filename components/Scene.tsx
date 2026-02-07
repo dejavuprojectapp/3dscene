@@ -925,6 +925,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const dejavuStartPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const dejavuTargetPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const dejavuStartTimeRef = useRef(0);
+  const dejavuCameraSwitchScheduledRef = useRef(false); // Flag para evitar múltiplos agendamentos
   const [hologramFrequency, setHologramFrequency] = useState(20.0); // 10.0 - 50.0
   const [hologramSpeed, setHologramSpeed] = useState(2.0); // 0.5 - 5.0
   const [featherEnabled, setFeatherEnabled] = useState(false); // Toggle do feather edge
@@ -3340,6 +3341,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     // PASSO 3: Inicia animação
     dejavuStartTimeRef.current = performance.now();
     setIsDejavuAnimating(true);
+    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag
 
     // Desabilita gyroscópio se estiver ativo
     if (gyroscopeMode) {
@@ -3377,6 +3379,25 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       // Sempre olha para o centro (foco cinematográfico)
       camera.lookAt(0, 0, 0);
 
+      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, agenda troca para câmera principal
+      if (t > 0.9 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
+        dejavuCameraSwitchScheduledRef.current = true; // Marca como agendado
+        
+        // Calcula delay baseado no tempo restante + tempo adicional
+        const timeToFinish = duration * (1 - t); // Tempo até t=1
+        const additionalDelay = 500; // 500ms extra após chegar em (0,0,0)
+        const totalDelay = timeToFinish + additionalDelay;
+        
+        console.log('🎬 DEJAVU - Agendando troca para Câmera Principal em', totalDelay.toFixed(0), 'ms');
+        
+        setTimeout(() => {
+          if (renderingCamera === 'ar') {
+            console.log('📷 DEJAVU - Ativando Câmera Principal automaticamente');
+            stopARCamera();
+          }
+        }, totalDelay);
+      }
+
       // Continua animação ou finaliza
       if (t < 1) {
         dejavuAnimationRef.current = requestAnimationFrame(animate);
@@ -3406,6 +3427,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       dejavuAnimationRef.current = null;
     }
     setIsDejavuAnimating(false);
+    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag de agendamento
     
     // Reativa OrbitControls
     if (controlsRef.current) {

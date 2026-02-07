@@ -3330,6 +3330,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     // PASSO 1: Guarda posição inicial
     dejavuStartPosRef.current.copy(camera.position);
     console.log('🎬 DEJAVU - Posição inicial:', dejavuStartPosRef.current);
+    console.log('📷 DEJAVU - Câmera ativa:', renderingCamera === 'ar' ? 'AR Camera' : 'Main Camera');
 
     // PASSO 2: Define posição final no centro absoluto (0, 0, 0)
     dejavuTargetPosRef.current.set(0, 0, 0);
@@ -4904,7 +4905,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               startDejavuAnimation();
             }
           }}
-          disabled={!sceneEnabled || renderingCamera === 'ar'}
+          disabled={!sceneEnabled}
           className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors ${
             isDejavuAnimating
               ? 'bg-orange-500 hover:bg-orange-600 text-white'

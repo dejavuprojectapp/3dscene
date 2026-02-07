@@ -918,6 +918,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [equirectReflectionStrength, setEquirectReflectionStrength] = useState(1.0); // Para modo simples
   const [hologramEnabled, setHologramEnabled] = useState(false); // Toggle do efeito holográfico
   const [hologramIntensity, setHologramIntensity] = useState(0.03); // 0.0 - 0.1
+  
+  // 🎬 Dejavu - Animação cinematográfica da câmera
+  const [isDejavuAnimating, setIsDejavuAnimating] = useState(false);
+  const dejavuAnimationRef = useRef<number | null>(null);
+  const dejavuStartPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const dejavuTargetPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const dejavuStartTimeRef = useRef(0);
   const [hologramFrequency, setHologramFrequency] = useState(20.0); // 10.0 - 50.0
   const [hologramSpeed, setHologramSpeed] = useState(2.0); // 0.5 - 5.0
   const [featherEnabled, setFeatherEnabled] = useState(false); // Toggle do feather edge
@@ -1268,6 +1275,16 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     return () => {
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, []);
+
+  // 🎬 Cleanup animação Dejavu ao desmontar componente
+  useEffect(() => {
+    return () => {
+      if (dejavuAnimationRef.current !== null) {
+        cancelAnimationFrame(dejavuAnimationRef.current);
+        console.log('🧹 Dejavu animation cleanup');
       }
     };
   }, []);
@@ -3287,6 +3304,132 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   };
 
   /**
+   * 🎬 FUNÇÃO DE EASING CINEMATOGRÁFICA
+   * Cria movimento suave não-linear (evita robótico)
+   * easeInOutCubic: acelera no início, desacelera no fim
+   */
+  const easeInOutCubic = (t: number): number => {
+    return t < 0.5
+      ? 4 * t * t * t
+      : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  };
+
+  /**
+   * 🎥 DEJAVU - Animação cinematográfica da câmera
+   * Travelling suave da câmera atual até posição final
+   * Sempre mantém foco no centro (lookAt)
+   */
+  const startDejavuAnimation = () => {
+    if (!activeCameraRef.current) {
+      alert('❌ Câmera não encontrada');
+      return;
+    }
+
+    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
+    
+    // PASSO 1: Guarda posição inicial
+    dejavuStartPosRef.current.copy(camera.position);
+    console.log('🎬 DEJAVU - Posição inicial:', dejavuStartPosRef.current);
+
+    // PASSO 2: Calcula posição final
+    // Direção da câmera até o centro (0,0,0)
+    const centerPos = new THREE.Vector3(0, 0, 0);
+    const direction = new THREE.Vector3()
+      .subVectors(centerPos, dejavuStartPosRef.current)
+      .normalize();
+
+    // Distância final da câmera ao centro
+    const finalDistance = 5; // Ajuste fino
+
+    // Posição final: centro + direção invertida * distância
+    dejavuTargetPosRef.current
+      .copy(centerPos)
+      .addScaledVector(direction, -finalDistance);
+    
+    // Força Z = 0 (ou próximo de 0)
+    dejavuTargetPosRef.current.z = 0.1;
+
+    console.log('🎯 DEJAVU - Posição final:', dejavuTargetPosRef.current);
+
+    // PASSO 3: Inicia animação
+    dejavuStartTimeRef.current = performance.now();
+    setIsDejavuAnimating(true);
+
+    // Desabilita gyroscópio se estiver ativo
+    if (gyroscopeMode) {
+      stopGyroscopeMode();
+      console.log('📱 Gyroscópio desativado durante Dejavu');
+    }
+
+    // Desabilita OrbitControls durante animação
+    if (controlsRef.current) {
+      controlsRef.current.enabled = false;
+      console.log('🎮 OrbitControls desabilitados durante Dejavu');
+    }
+
+    // PASSO 4: Loop de animação
+    const duration = 2500; // 2.5 segundos
+
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - dejavuStartTimeRef.current;
+
+      // Calcula t (0 a 1)
+      let t = elapsed / duration;
+      t = Math.min(t, 1);
+
+      // Aplica easing suave
+      const smoothT = easeInOutCubic(t);
+
+      // Interpola posição com lerp
+      camera.position.lerpVectors(
+        dejavuStartPosRef.current,
+        dejavuTargetPosRef.current,
+        smoothT
+      );
+
+      // Sempre olha para o centro (foco cinematográfico)
+      camera.lookAt(0, 0, 0);
+
+      // Continua animação ou finaliza
+      if (t < 1) {
+        dejavuAnimationRef.current = requestAnimationFrame(animate);
+      } else {
+        // Animação completa
+        setIsDejavuAnimating(false);
+        
+        // Reativa OrbitControls
+        if (controlsRef.current) {
+          controlsRef.current.enabled = true;
+          console.log('🎮 OrbitControls reativados após Dejavu');
+        }
+        
+        console.log('✅ DEJAVU - Animação completa');
+      }
+    };
+
+    animate();
+  };
+
+  /**
+   * 🛑 Cancela animação dejavu
+   */
+  const cancelDejavuAnimation = () => {
+    if (dejavuAnimationRef.current !== null) {
+      cancelAnimationFrame(dejavuAnimationRef.current);
+      dejavuAnimationRef.current = null;
+    }
+    setIsDejavuAnimating(false);
+    
+    // Reativa OrbitControls
+    if (controlsRef.current) {
+      controlsRef.current.enabled = true;
+    }
+    
+    console.log('🛑 DEJAVU - Animação cancelada');
+  };
+
+  /**
    * 🧮 FUNÇÃO MATEMÁTICA LEGADA: Converte Device Orientation (gyro) em Rotação de Câmera 3D
    * ⚠️ DEPRECADA - Use updateOrientationWithQuaternion para nova implementação
    * 
@@ -4765,8 +4908,36 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         )}
       </div>
 
-      {/* Botão para toggle debug overlay - canto inferior esquerdo */}
-      <div className="fixed bottom-4 left-4 z-[9999]">
+      {/* Botões fixos - canto inferior esquerdo */}
+      <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
+        {/* Botão Dejavu - Animação cinematográfica */}
+        <button
+          onClick={() => {
+            if (isDejavuAnimating) {
+              cancelDejavuAnimation();
+            } else {
+              startDejavuAnimation();
+            }
+          }}
+          disabled={!sceneEnabled || renderingCamera === 'ar'}
+          className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors ${
+            isDejavuAnimating
+              ? 'bg-orange-500 hover:bg-orange-600 text-white'
+              : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white'
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+          title={isDejavuAnimating ? 'Cancelar animação' : 'Travelling cinematográfico da câmera'}
+        >
+          {isDejavuAnimating ? (
+            <span className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-white animate-pulse"></div>
+              🎬 Animando...
+            </span>
+          ) : (
+            '🎬 Dejavu'
+          )}
+        </button>
+        
+        {/* Botão toggle debug overlay */}
         <button
           onClick={() => setShowDebugOverlay(!showDebugOverlay)}
           className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors"

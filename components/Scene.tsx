@@ -871,6 +871,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     lookAt: { x: number; y: number; z: number };
   }>>([]);
   const activeCameraRef = useRef<THREE.Camera | null>(null); // Ref para a câmera ativa
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const controlsRef = useRef<any>(null); // Ref para o OrbitControls (tipo dinâmico)
   const [isAnimating, setIsAnimating] = useState(false);
   const animationFrameRef = useRef<number | null>(null);
   const animationProgressRef = useRef(0);
@@ -3230,6 +3232,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       beta: event.beta || 0,    // pitch (rotação X)
       gamma: event.gamma || 0,  // roll (rotação Y)
     };
+    // console.log('📲 Device orientation atualizado:', deviceOrientationRef.current); // Log comentado para não poluir
   };
 
   const handleDeviceMotion = (event: DeviceMotionEvent) => {
@@ -3640,6 +3643,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         controls.enablePan = false; // Desabilita pan (movimento lateral)
         controls.screenSpacePanning = false; // Mantém Z como up durante pan
         controls.maxPolarAngle = Math.PI; // Permite rotação completa
+        
+        // Armazena controls no ref para acesso no useFrame
+        controlsRef.current = controls;
 
         // 🎨 Post-processing: Vignette (escurece os cantos)
         const composer = new EffectComposer(renderer);
@@ -3988,8 +3994,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           }
           
           // 📱 Gyroscope Mode: Usa orientação do dispositivo para controlar diretamente a câmera
-          if (gyroscopeMode && !useARCamera && controls) {
+          if (gyroscopeMode && !useARCamera && controlsRef.current) {
+            const controls = controlsRef.current;
             const { alpha, beta } = deviceOrientationRef.current;
+            
+            console.log('🔄 Gyroscope ativo - alpha:', alpha, 'beta:', beta);
             
             // Pega a posição atual da câmera em coordenadas esféricas
             const spherical = new THREE.Spherical();

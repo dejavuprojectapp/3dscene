@@ -2996,26 +2996,29 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const startARExperience = async () => {
     console.log('🎬 Iniciando experiência AR...');
     
-    // PASSO 1: Ativar cena se ainda não estiver ativa
+    // PASSO 1: Ativar cena com câmera principal se ainda não estiver ativa
     if (!sceneEnabled) {
-      console.log('📦 Carregando cena com objetos e textura...');
+      console.log('📦 PASSO 1: Carregando cena 3D com câmera principal...');
       setSceneEnabled(true);
+      
+      // Aguarda a cena carregar completamente
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.log('✅ Cena 3D carregada com câmera principal');
     }
     
-    // PASSO 2: Ativar câmera AR (cena carrega de forma assíncrona)
-    console.log('📹 Ativando câmera AR...');
+    // PASSO 2: Ativar câmera AR
+    console.log('📹 PASSO 2: Entrando no modo câmera AR...');
     await startARCamera();
+    console.log('✅ Modo câmera AR ativado');
     
-    // PASSO 3: Clica no botão de background texture automaticamente
-    // Aguarda um pouco para textura carregar antes de clicar
+    // PASSO 3: Ativar background texture automaticamente
+    console.log('🖼️ PASSO 3: Ativando background texture...');
     setTimeout(() => {
       if (bgTextureRef.current) {
-        // Simula clique no botão de background texture
-        const currentState = bgTextureEnabled;
-        toggleBackgroundTexture(!currentState);
-        console.log('🖼️ Clique automático no botão Background Texture executado');
+        toggleBackgroundTexture(true);
+        console.log('✅ Background texture ativado automaticamente');
       }
-    }, 500);
+    }, 500); // Pequeno delay para garantir que a cena AR está pronta
   };
 
   // Inicializa webcam/câmera traseira

@@ -914,7 +914,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [equirectBrightness, setEquirectBrightness] = useState(1.0);
   const [equirectMetalness, setEquirectMetalness] = useState(1.0);
   const [equirectMetalColor, setEquirectMetalColor] = useState(new THREE.Color(1.0, 0.85, 0.55)); // Gold default
-  const [equirectUseMetal, setEquirectUseMetal] = useState(true); // Checkbox para habilitar metal
+  const [equirectUseMetal, setEquirectUseMetal] = useState(false); // Checkbox para habilitar metal
   const [equirectReflectionStrength, setEquirectReflectionStrength] = useState(1.0); // Para modo simples
   const [hologramEnabled, setHologramEnabled] = useState(false); // Toggle do efeito holográfico
   const [hologramIntensity, setHologramIntensity] = useState(0.03); // 0.0 - 0.1
@@ -4029,21 +4029,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 model.position.set(0, 0, 0); // Nasce na origem
                 model.name = fileName;
                 
-                // 🔄 Inverte normais do sphere.glb para efeito de skybox interno
+                // 🌐 Detecta sphere.glb e ativa shader equirectangular automaticamente
                 const isSphere = fileName.toLowerCase().includes('sphere.glb');
                 if (isSphere) {
-                  console.log('🌐 Detectado sphere.glb - invertendo normais para skybox interno');
-                  model.traverse((child: THREE.Object3D) => {
-                    const mesh = child as THREE.Mesh;
-                    if (mesh.isMesh && mesh.geometry) {
-                      // Inverte a geometria no eixo X
-                      mesh.geometry.scale(-1, 1, 1);
-                      mesh.userData.normalState = 'inverted'; // Marca como invertido
-                      console.log('✅ Normais invertidas para:', mesh.name || 'mesh sem nome');
-                    }
-                  });
-                  // Adiciona ao Set de GLBs com normais invertidas
-                  setInvertedNormalsGLBs(prev => new Set(prev).add(fileName));
+                  console.log('🌐 Detectado sphere.glb - ativando shader equirectangular HDRI');
                 }
                 
                 // � Aplica shader PBR customizado aos GLBs
@@ -4068,6 +4057,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   visible: true,
                   brightness: 1.0 // Brilho inicial
                 });
+                
+                // 🌐 Se for sphere.glb, adiciona ao equirectGLBs automaticamente
+                if (isSphere) {
+                  setEquirectGLBs(prev => new Set(prev).add(fileName));
+                  console.log('✅ sphere.glb adicionado automaticamente ao shader equirectangular HDRI');
+                }
                 
                 // Cleanup: modelo adicionado à cena, referências temporárias podem ser liberadas
                 console.log(`🧹 GLB loader: recursos temporários liberados para ${fileName}`);

@@ -2998,15 +2998,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     
     // PASSO 1: Ativar cena se ainda não estiver ativa
     if (!sceneEnabled) {
-      console.log('📦 Carregando cena com objetos...');
+      console.log('📦 Carregando cena com objetos e textura...');
       setSceneEnabled(true);
-      
-      // Aguarda a cena carregar (tempo suficiente para inicializar)
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      console.log('✅ Cena carregada');
     }
     
-    // PASSO 2: Ativar câmera AR
+    // PASSO 2: Ativar câmera AR (cena carrega de forma assíncrona)
     console.log('📹 Ativando câmera AR...');
     await startARCamera();
   };

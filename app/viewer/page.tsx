@@ -38,6 +38,11 @@ export default function ViewerPage() {
       .then(data => {
         const textures = data.files.map((file: string) => `/textures/${file}`);
         setAvailableTextures(textures);
+        // 🎯 Auto-seleciona a primeira textura disponível
+        if (textures.length > 0) {
+          setSelectedTexture(textures[0]);
+          console.log('✅ Textura selecionada automaticamente:', textures[0]);
+        }
         setLoadingTextures(false);
       })
       .catch(error => {

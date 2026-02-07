@@ -91,6 +91,8 @@ const equirectangularReflectionFragmentShader = `
   uniform vec3 uBlackHoleDarkColor;   // Cor escura das edges
   uniform vec3 uBlackHoleBrightColor; // Cor brilhante das edges
   uniform float uBlackHoleIntensity;  // 0.0 - 1.0 - intensidade do overlay
+  uniform float uBlackHoleRadius;     // 0.0 - 1.0 - raio do efeito em relação ao centro
+  uniform float uInvertedNormals;     // 0.0 ou 1.0 - se as normais estão invertidas
   
   varying vec3 vWorldNormal;
   varying vec3 vViewDir;
@@ -134,7 +136,20 @@ const equirectangularReflectionFragmentShader = `
   }
 
   void main() {
+    // 🔄 Correção robusta de normais usando gl_FrontFacing
+    // Quando visto por dentro (backface), inverte a normal automaticamente
     vec3 N = normalize(vWorldNormal);
+    
+    // Se estamos vendo a backface E as normais não foram manualmente invertidas
+    // OU se estamos vendo frontface mas as normais foram manualmente invertidas
+    // então invertemos a normal
+    bool shouldFlipNormal = (!gl_FrontFacing && uInvertedNormals < 0.5) || 
+                            (gl_FrontFacing && uInvertedNormals > 0.5);
+    
+    if (shouldFlipNormal) {
+      N *= -1.0;
+    }
+    
     vec3 V = normalize(vViewDir);
 
     // 🌀 HOLOGRAM EDGE DISTORTION
@@ -165,6 +180,12 @@ const equirectangularReflectionFragmentShader = `
     float edgeRestriction = 0.0;
     
     if (uBlackHoleEnabled > 0.5) {
+      // 🎯 RADIUS CONTROL - Distância do fragmento ao centro (object-space)
+      float distFromCenter = length(vPosition);
+      // Máscara radial: efeito aparece do centro (0) até uBlackHoleRadius
+      // 1.0 onde distFromCenter < radius, 0.0 onde distFromCenter > radius
+      float radiusMask = 1.0 - smoothstep(uBlackHoleRadius * 0.85, uBlackHoleRadius, distFromCenter);
+      
       // 1️⃣ EDGE DETECTION - Fresnel com espessura em pixels (fwidth)
       float edgeFresnel = 1.0 - clamp(dot(N, V), 0.0, 1.0);
       float edge = smoothstep(0.35, 0.85, edgeFresnel);
@@ -173,6 +194,9 @@ const equirectangularReflectionFragmentShader = `
       float edgeWidth = fwidth(edge) * 4.0;
       float edgeMask = smoothstep(0.0, edgeWidth, edge);
       edgeRestriction = smoothstep(0.5, 1.0, edge); // Restringe o efeito muito mais para perto das edges
+      
+      // Aplica máscara de radius
+      edgeRestriction *= radiusMask;
 
       // 2️⃣ NOISE PROCEDURAL ORGÂNICO
       // Noise em screen-space para distorção caótica
@@ -254,6 +278,14 @@ const equirectangularReflectionFragmentShader = `
       
       // Aplica softness (controla a suavidade da transição)
       alpha = pow(alpha, 1.0 / (uFeatherSoftness + 0.1));
+    }
+
+    // 🔄 INVERTED NORMALS - Transparência para ver através da esfera
+    if (uInvertedNormals > 0.5) {
+      // Reduz significativamente o alpha para permitir ver objetos dentro
+      alpha *= 0.3; // 30% de opacidade
+      // Adiciona um leve tint para indicar que é uma superfície semi-transparente
+      color = mix(color, color * 1.2, 0.3);
     }
 
     gl_FragColor = vec4(color, alpha);
@@ -746,6 +778,7 @@ interface SceneExportData {
         darkColor: { r: number; g: number; b: number };
         brightColor: { r: number; g: number; b: number };
         intensity: number;
+        radius: number;
       };
     };
   };
@@ -859,6 +892,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const equirectOriginalSidesRef = useRef<Map<string, THREE.Side>>(new Map());
   const equirectHDRIRef = useRef<THREE.Texture | null>(null);
   const [equirectGLBs, setEquirectGLBs] = useState<Set<string>>(new Set());
+  const [invertedNormalsGLBs, setInvertedNormalsGLBs] = useState<Set<string>>(new Set()); // Controla quais GLBs têm normais invertidas
   const [equirectFresnelPower, setEquirectFresnelPower] = useState(5.0);
   const [equirectBrightness, setEquirectBrightness] = useState(1.0);
   const [equirectMetalness, setEquirectMetalness] = useState(1.0);
@@ -876,6 +910,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [blackHoleDarkColor, setBlackHoleDarkColor] = useState(new THREE.Color(0.01, 0.0, 0.03)); // Cor escura
   const [blackHoleBrightColor, setBlackHoleBrightColor] = useState(new THREE.Color(0.9, 0.6, 1.2)); // Cor brilhante
   const [blackHoleIntensity, setBlackHoleIntensity] = useState(0.3); // 0.0 - 1.0
+  const [blackHoleRadius, setBlackHoleRadius] = useState(2.0); // 0.0 - 10.0 - raio do efeito
 
   // 🎨 Referências para materiais PBR dos GLBs (MeshStandardMaterial com onBeforeCompile)
   const glbPbrMaterialsRef = useRef<Map<string, PBRMaterialWithShader>>(new Map());
@@ -1156,6 +1191,13 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       material.uniforms.uBlackHoleIntensity.value = blackHoleIntensity;
     });
   }, [blackHoleIntensity]);
+
+  // 🎯 Atualiza Black Hole Radius
+  useEffect(() => {
+    equirectGLBsRef.current.forEach((material) => {
+      material.uniforms.uBlackHoleRadius.value = blackHoleRadius;
+    });
+  }, [blackHoleRadius]);
   // �🌐 Atualiza Time do shader equirectangular + Particle systems (para animação de onda)
   useEffect(() => {
     let animationFrameId: number;
@@ -1491,7 +1533,61 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   };
 
-  // 🖱️ Função para toggle clickable de um objeto GLB
+  // � Função para inverter/reverter normais de um GLB
+  const toggleInvertedNormals = (objectName: string, invert: boolean) => {
+    const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
+    if (!objData) return;
+    
+    // Define renderOrder para objetos transparentes serem renderizados por último
+    objData.object.renderOrder = invert ? 999 : 0;
+    
+    objData.object.traverse((child: THREE.Object3D) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.isMesh && mesh.geometry) {
+        // Armazena o estado original se não existir
+        if (!mesh.userData.normalState) {
+          mesh.userData.normalState = 'normal'; // 'normal' ou 'inverted'
+        }
+        
+        const currentState = mesh.userData.normalState;
+        
+        // Se o estado desejado é diferente do atual, inverte
+        if ((invert && currentState === 'normal') || (!invert && currentState === 'inverted')) {
+          mesh.geometry.scale(-1, 1, 1);
+          mesh.userData.normalState = invert ? 'inverted' : 'normal';
+          console.log(`🔄 Normais ${invert ? 'invertidas' : 'revertidas'} para:`, mesh.name || objectName);
+        }
+      }
+    });
+    
+    // Atualiza o Set de GLBs com normais invertidas
+    setInvertedNormalsGLBs(prev => {
+      const newSet = new Set(prev);
+      if (invert) {
+        newSet.add(objectName);
+      } else {
+        newSet.delete(objectName);
+      }
+      return newSet;
+    });
+    
+    // Se o objeto tem shader equirectangular aplicado, atualiza a uniform e o side
+    const equirectMaterial = equirectGLBsRef.current.get(objectName);
+    if (equirectMaterial) {
+      equirectMaterial.uniforms.uInvertedNormals.value = invert ? 1.0 : 0.0;
+      // Para spheres internas (invertidas), usa BackSide; para normais, usa FrontSide
+      equirectMaterial.side = invert ? THREE.BackSide : THREE.FrontSide;
+      // Quando invertidas, material deve ser transparente e depthWrite false
+      equirectMaterial.transparent = invert || featherEnabled;
+      equirectMaterial.depthWrite = !invert;
+      equirectMaterial.needsUpdate = true;
+      console.log(`🔄 Shader equirectangular atualizado: uInvertedNormals = ${invert ? 1.0 : 0.0}, side = ${invert ? 'BackSide' : 'FrontSide'}`);
+    }
+    
+    console.log(`🔄 ${objectName}: Normais ${invert ? 'invertidas' : 'normais'}`);
+  };
+
+  // �🖱️ Função para toggle clickable de um objeto GLB
   const toggleObjectClickable = (objectName: string, clickable: boolean) => {
     const objData = sceneObjectsRef.current.find(obj => obj.name === objectName);
     if (objData) {
@@ -1836,6 +1932,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
     equirectOriginalSidesRef.current.set(objectName, originalSide);
 
+    // Verifica se o objeto tem normais invertidas
+    const hasInvertedNormals = invertedNormalsGLBs.has(objectName);
+
     const equirectMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uEnvMap: { value: hdriTexture },
@@ -1857,18 +1956,30 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         uBlackHoleDarkColor: { value: blackHoleDarkColor.clone() },
         uBlackHoleBrightColor: { value: blackHoleBrightColor.clone() },
         uBlackHoleIntensity: { value: blackHoleIntensity },
+        uBlackHoleRadius: { value: blackHoleRadius },
+        uInvertedNormals: { value: hasInvertedNormals ? 1.0 : 0.0 },
       },
       vertexShader: equirectangularReflectionVertexShader,
       fragmentShader: equirectangularReflectionFragmentShader,
-      side: THREE.FrontSide,
-      transparent: featherEnabled,
-      depthWrite: true,
+      // Para spheres internas (normais invertidas), usa BackSide para melhor performance e reflexão
+      // Para objetos normais, usa FrontSide
+      side: hasInvertedNormals ? THREE.BackSide : THREE.FrontSide,
+      // Quando normais invertidas ou feather habilitado, material deve ser transparente
+      transparent: hasInvertedNormals || featherEnabled,
+      // Quando normais invertidas, depthWrite false para ver objetos internos
+      depthWrite: !hasInvertedNormals,
       depthTest: true,
     });
 
     mesh.material = equirectMaterial;
     equirectGLBsRef.current.set(objectName, equirectMaterial);
-    console.log(`🌐 Shader Equirectangular + Black Hole Effect aplicado: ${objectName}`);
+    
+    // Define renderOrder para objetos transparentes serem renderizados por último
+    if (hasInvertedNormals) {
+      mesh.renderOrder = 999;
+    }
+    
+    console.log(`🌐 Shader Equirectangular + Black Hole Effect aplicado: ${objectName} (side: ${hasInvertedNormals ? 'BackSide' : 'FrontSide'})`);
   };
 
   // 🌐 Função para remover shader equirectangular e restaurar material original
@@ -2425,6 +2536,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               b: blackHoleBrightColor.b,
             },
             uBlackHoleIntensity: blackHoleIntensity,
+            uBlackHoleRadius: blackHoleRadius,
           };
         } else {
           // PBR shader (MeshStandardMaterial)
@@ -2625,6 +2737,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               b: blackHoleBrightColor.b,
             },
             intensity: blackHoleIntensity,
+            radius: blackHoleRadius,
           },
         },
       },
@@ -3469,6 +3582,23 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 const model = gltf.scene;
                 model.position.set(0, 0, 0); // Nasce na origem
                 model.name = fileName;
+                
+                // 🔄 Inverte normais do sphere.glb para efeito de skybox interno
+                const isSphere = fileName.toLowerCase().includes('sphere.glb');
+                if (isSphere) {
+                  console.log('🌐 Detectado sphere.glb - invertendo normais para skybox interno');
+                  model.traverse((child: THREE.Object3D) => {
+                    const mesh = child as THREE.Mesh;
+                    if (mesh.isMesh && mesh.geometry) {
+                      // Inverte a geometria no eixo X
+                      mesh.geometry.scale(-1, 1, 1);
+                      mesh.userData.normalState = 'inverted'; // Marca como invertido
+                      console.log('✅ Normais invertidas para:', mesh.name || 'mesh sem nome');
+                    }
+                  });
+                  // Adiciona ao Set de GLBs com normais invertidas
+                  setInvertedNormalsGLBs(prev => new Set(prev).add(fileName));
+                }
                 
                 // � Aplica shader PBR customizado aos GLBs
                 model.traverse((child: THREE.Object3D) => {
@@ -4636,11 +4766,26 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                           </label>
                           <input
                             type="range"
-                            min="0.0"
+                            min="-0.2"
                             max="1.0"
-                            step="0.05"
+                            step="0.01"
                             value={blackHoleIntensity}
                             onChange={e => setBlackHoleIntensity(parseFloat(e.target.value))}
+                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] text-gray-300 mb-1 block">
+                            Radius: {blackHoleRadius.toFixed(2)}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="10.0"
+                            step="0.1"
+                            value={blackHoleRadius}
+                            onChange={e => setBlackHoleRadius(parseFloat(e.target.value))}
                             className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
                           />
                         </div>
@@ -5160,7 +5305,23 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                           </label>
                         </div>
 
-                        {/* 🖱️ Clickable Toggle */}
+                        {/* � Inverter Normais Toggle */}
+                        <div className="flex items-center gap-2 mt-2">
+                          <input 
+                            type="checkbox"
+                            id={`invert-normals-${obj.name}`}
+                            checked={invertedNormalsGLBs.has(obj.name)}
+                            onChange={(e) => {
+                              toggleInvertedNormals(obj.name, e.target.checked);
+                            }}
+                            className="w-4 h-4 cursor-pointer"
+                          />
+                          <label htmlFor={`invert-normals-${obj.name}`} className="text-[9px] text-orange-300">
+                            🔄 Inverter Normais
+                          </label>
+                        </div>
+
+                        {/* �🖱️ Clickable Toggle */}
                         <div className="flex items-center gap-2 mt-2">
                           <input 
                             type="checkbox"

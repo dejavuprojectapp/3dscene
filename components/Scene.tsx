@@ -3025,11 +3025,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       z: dejavuStartPosRef.current.z.toFixed(2)
     });
 
-    // PASSO 2: Define posição alvo (próximo à origem, mas não exatamente em 0,0,0)
-    // Distância final: 5 unidades da origem para evitar clipping
-    const finalDistance = 5;
-    const direction = dejavuStartPosRef.current.clone().normalize();
-    dejavuTargetPosRef.current.copy(direction.multiplyScalar(finalDistance));
+    // PASSO 2: Define posição alvo na origem (0, 0, 0)
+    dejavuTargetPosRef.current.set(0, 0, 0);
     
     console.log('🎯 DEJAVU - Posição alvo:', {
       x: dejavuTargetPosRef.current.x.toFixed(2),

@@ -2992,7 +2992,71 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     };
   }, []);
 
-  // 🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
+  // � Função de easing cinematográfica (estilo jogo de videogame)
+  const easeInOutCubic = (t: number): number => {
+    return t < 0.5
+      ? 4 * t * t * t
+      : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  };
+
+  // 🎬 DEJAVU: Animação cinematográfica da câmera até a origem (0,0,0)
+  const travelCameraToOrigin = (duration: number = 2000) => {
+    if (!activeCameraRef.current) {
+      console.warn('⚠️ Câmera não disponível para animação Dejavu');
+      return;
+    }
+
+    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
+    const startTime = performance.now();
+    const startPos = camera.position.clone();
+
+    // Posição alvo: origem (0, 0, 0)
+    const globePosition = new THREE.Vector3(0, 0, 0);
+
+    // Direção da câmera até o globo
+    const dir = new THREE.Vector3()
+      .subVectors(globePosition, startPos)
+      .normalize();
+
+    // Distância final da câmera ao globo (ajuste fino para não ficar dentro)
+    const finalDistance = 5;
+
+    const targetPos = new THREE.Vector3()
+      .copy(globePosition)
+      .addScaledVector(dir, -finalDistance);
+
+    console.log('🎬 DEJAVU: Iniciando travelling cinematográfico');
+    console.log('  📍 Posição inicial:', startPos);
+    console.log('  🎯 Posição alvo:', targetPos);
+    console.log('  ⏱️ Duração:', duration + 'ms');
+
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - startTime;
+
+      let t = elapsed / duration;
+      t = Math.min(t, 1);
+
+      // Aplica easing suave (cinematográfico)
+      const smoothT = easeInOutCubic(t);
+
+      // Interpola posição com easing
+      camera.position.lerpVectors(startPos, targetPos, smoothT);
+      
+      // Sempre olha para o centro (globo) - sensação de trilho
+      camera.lookAt(globePosition);
+
+      if (t < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        console.log('✅ DEJAVU: Travelling completo! Câmera na origem.');
+      }
+    };
+
+    animate();
+  };
+
+  // �🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
   const startARExperience = async () => {
     console.log('🎬 Iniciando experiência AR (carregando tudo em background)...');
     
@@ -4789,8 +4853,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         )}
       </div>
 
-      {/* Botão para toggle debug overlay - canto inferior esquerdo */}
-      <div className="fixed bottom-4 left-4 z-[9999]">
+      {/* Botões - canto inferior esquerdo */}
+      <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
+        {/* Botão Dejavu - Animação cinematográfica para origem */}
+        <button
+          onClick={() => travelCameraToOrigin(2500)}
+          className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-bold text-xs sm:text-sm shadow-lg transition-all transform hover:scale-105"
+          title="Animação cinematográfica da câmera para a origem (0,0,0)"
+        >
+          🎬 DEJAVU
+        </button>
+        
+        {/* Botão para toggle debug overlay */}
         <button
           onClick={() => setShowDebugOverlay(!showDebugOverlay)}
           className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors"

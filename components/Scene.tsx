@@ -3051,7 +3051,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
       // Solicita permissão para DeviceOrientation (iOS 13+)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      if (typeof window !== 'undefined' && typeof DeviceOrientationEvent !== 'undefined' && typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const permission = await (DeviceOrientationEvent as any).requestPermission();
@@ -3064,14 +3064,14 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         } catch (orientationError) {
           console.warn('⚠️ Erro ao solicitar DeviceOrientation:', orientationError);
         }
-      } else {
+      } else if (typeof window !== 'undefined') {
         window.addEventListener('deviceorientation', handleDeviceOrientation);
         console.log('✅ DeviceOrientation listener adicionado');
       }
 
       // Adiciona listener para DeviceMotion (acelerômetro)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+      if (typeof window !== 'undefined' && typeof DeviceMotionEvent !== 'undefined' && typeof (DeviceMotionEvent as any).requestPermission === 'function') {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const permission = await (DeviceMotionEvent as any).requestPermission();
@@ -3082,7 +3082,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         } catch (motionError) {
           console.warn('⚠️ Erro ao solicitar DeviceMotion:', motionError);
         }
-      } else {
+      } else if (typeof window !== 'undefined') {
         window.addEventListener('devicemotion', handleDeviceMotion);
         console.log('✅ DeviceMotion listener adicionado');
       }
@@ -3190,8 +3190,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       stream.getTracks().forEach(track => track.stop());
       videoRef.current.srcObject = null;
     }
-    window.removeEventListener('deviceorientation', handleDeviceOrientation);
-    window.removeEventListener('devicemotion', handleDeviceMotion);
+    
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('deviceorientation', handleDeviceOrientation);
+      window.removeEventListener('devicemotion', handleDeviceMotion);
+    }
     
     // Inicia a transição visual
     console.log('🕰️ Iniciando transição para câmera principal');
@@ -3243,19 +3246,27 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const startGyroscopeMode = async () => {
     console.log('📱 Iniciando Gyroscope Mode...');
     
+    // Verifica se está no navegador
+    if (typeof window === 'undefined') {
+      console.warn('⚠️ Não está no ambiente do navegador');
+      alert('Sensor de orientação não disponível neste ambiente.');
+      return;
+    }
+    
     // Reseta orientação inicial
     isInitialOrientationSet.current = false;
     
-    // Solicita permissão para DeviceOrientation (iOS 13+)
+    // iOS 13+ requer permissão explícita
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
       try {
+        console.log('📱 Solicitando permissão DeviceOrientation (iOS)...');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const permission = await (DeviceOrientationEvent as any).requestPermission();
         if (permission === 'granted') {
           window.addEventListener('deviceorientation', handleDeviceOrientation);
           setGyroscopeMode(true);
-          console.log('✅ Gyroscope Mode ativo');
+          console.log('✅ Gyroscope Mode ativo (iOS)');
         } else {
           console.warn('⚠️ Permissão DeviceOrientation negada');
           alert('Permissão de orientação negada. Ative nas configurações do navegador.');
@@ -3265,16 +3276,49 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         alert('Erro ao ativar gyroscope. Verifique as permissões.');
       }
     } else {
-      // Navegadores que não precisam de permissão explícita
-      window.addEventListener('deviceorientation', handleDeviceOrientation);
-      setGyroscopeMode(true);
-      console.log('✅ Gyroscope Mode ativo');
+      // Android e outros navegadores - não precisam de permissão explícita
+      try {
+        console.log('📱 Ativando DeviceOrientation (Android/Desktop)...');
+        
+        // Testa se o sensor realmente fornece dados
+        let orientationReceived = false;
+        
+        const testHandler = (event: Event) => {
+          const e = event as DeviceOrientationEvent;
+          if (e.alpha !== null || e.beta !== null || e.gamma !== null) {
+            orientationReceived = true;
+            console.log('✅ Sensor de orientação detectado:', { alpha: e.alpha, beta: e.beta, gamma: e.gamma });
+          }
+        };
+        
+        window.addEventListener('deviceorientation', testHandler);
+        
+        // Aguarda 500ms para verificar se o sensor está funcionando
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        window.removeEventListener('deviceorientation', testHandler);
+        
+        if (orientationReceived) {
+          // Sensor funcionando, ativa o modo gyroscope
+          window.addEventListener('deviceorientation', handleDeviceOrientation);
+          setGyroscopeMode(true);
+          console.log('✅ Gyroscope Mode ativo (Android)');
+        } else {
+          console.warn('⚠️ Sensor de orientação não está fornecendo dados');
+          alert('Sensor de orientação não está respondendo. Verifique se seu navegador tem permissão para acessar os sensores de movimento.');
+        }
+      } catch (error) {
+        console.error('❌ Erro ao ativar DeviceOrientation:', error);
+        alert('Erro ao ativar gyroscope: ' + error);
+      }
     }
   };
 
   const stopGyroscopeMode = () => {
     console.log('📱 Desativando Gyroscope Mode...');
-    window.removeEventListener('deviceorientation', handleDeviceOrientation);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('deviceorientation', handleDeviceOrientation);
+    }
     setGyroscopeMode(false);
     isInitialOrientationSet.current = false;
     console.log('✅ Gyroscope Mode desativado');
@@ -4325,15 +4369,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           </button>
         )}
         
-        {/* Botão para toggle debug overlay */}
-        <button
-          onClick={() => setShowDebugOverlay(!showDebugOverlay)}
-          className="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors"
-          title={showDebugOverlay ? 'Esconder Debug' : 'Mostrar Debug'}
-        >
-          {showDebugOverlay ? '🔽 Esconder Logs' : '🔼 Mostrar Logs'}
-        </button>
-
         {/* Botão para exportar cena para JSON */}
         <button
           onClick={exportSceneToJSON}
@@ -4358,6 +4393,17 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             ✅ AR Ativa
           </div>
         )}
+      </div>
+
+      {/* Botão para toggle debug overlay - canto inferior esquerdo */}
+      <div className="fixed bottom-4 left-4 z-[9999]">
+        <button
+          onClick={() => setShowDebugOverlay(!showDebugOverlay)}
+          className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors"
+          title={showDebugOverlay ? 'Esconder Debug' : 'Mostrar Debug'}
+        >
+          {showDebugOverlay ? '🔽 Esconder Logs' : '🔼 Mostrar Logs'}
+        </button>
       </div>
       
       {/* Debug Info Overlay - Condicional */}

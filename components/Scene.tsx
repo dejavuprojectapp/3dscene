@@ -914,18 +914,10 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [equirectBrightness, setEquirectBrightness] = useState(1.0);
   const [equirectMetalness, setEquirectMetalness] = useState(1.0);
   const [equirectMetalColor, setEquirectMetalColor] = useState(new THREE.Color(1.0, 0.85, 0.55)); // Gold default
-  const [equirectUseMetal, setEquirectUseMetal] = useState(false); // Checkbox para habilitar metal
+  const [equirectUseMetal, setEquirectUseMetal] = useState(true); // Checkbox para habilitar metal
   const [equirectReflectionStrength, setEquirectReflectionStrength] = useState(1.0); // Para modo simples
   const [hologramEnabled, setHologramEnabled] = useState(false); // Toggle do efeito holográfico
   const [hologramIntensity, setHologramIntensity] = useState(0.03); // 0.0 - 0.1
-  
-  // 🎬 Dejavu - Animação cinematográfica da câmera
-  const [isDejavuAnimating, setIsDejavuAnimating] = useState(false);
-  const dejavuAnimationRef = useRef<number | null>(null);
-  const dejavuStartPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  const dejavuTargetPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  const dejavuStartTimeRef = useRef(0);
-  const dejavuCameraSwitchScheduledRef = useRef(false); // Flag para evitar múltiplos agendamentos
   const [hologramFrequency, setHologramFrequency] = useState(20.0); // 10.0 - 50.0
   const [hologramSpeed, setHologramSpeed] = useState(2.0); // 0.5 - 5.0
   const [featherEnabled, setFeatherEnabled] = useState(false); // Toggle do feather edge
@@ -1276,16 +1268,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     return () => {
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
-      }
-    };
-  }, []);
-
-  // 🎬 Cleanup animação Dejavu ao desmontar componente
-  useEffect(() => {
-    return () => {
-      if (dejavuAnimationRef.current !== null) {
-        cancelAnimationFrame(dejavuAnimationRef.current);
-        console.log('🧹 Dejavu animation cleanup');
       }
     };
   }, []);
@@ -3010,6 +2992,25 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     };
   }, []);
 
+  // 🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
+  const startARExperience = async () => {
+    console.log('🎬 Iniciando experiência AR...');
+    
+    // PASSO 1: Ativar cena se ainda não estiver ativa
+    if (!sceneEnabled) {
+      console.log('📦 Carregando cena com objetos...');
+      setSceneEnabled(true);
+      
+      // Aguarda a cena carregar (tempo suficiente para inicializar)
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      console.log('✅ Cena carregada');
+    }
+    
+    // PASSO 2: Ativar câmera AR
+    console.log('📹 Ativando câmera AR...');
+    await startARCamera();
+  };
+
   // Inicializa webcam/câmera traseira
   const startARCamera = async () => {
     try {
@@ -3302,127 +3303,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         z: acc.z || 0,
       };
     }
-  };
-
-  /**
-   * 🎬 FUNÇÃO DE EASING CINEMATOGRÁFICA
-   * Cria movimento suave não-linear (evita robótico)
-   * easeInOutCubic: acelera no início, desacelera no fim
-   */
-  const easeInOutCubic = (t: number): number => {
-    return t < 0.5
-      ? 4 * t * t * t
-      : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  };
-
-  /**
-   * 🎥 DEJAVU - Animação cinematográfica da câmera
-   * Travelling suave da câmera atual até posição final
-   * Sempre mantém foco no centro (lookAt)
-   */
-  const startDejavuAnimation = () => {
-    if (!activeCameraRef.current) {
-      alert('❌ Câmera não encontrada');
-      return;
-    }
-
-    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
-    
-    // PASSO 1: Guarda posição inicial
-    dejavuStartPosRef.current.copy(camera.position);
-    console.log('🎬 DEJAVU - Posição inicial:', dejavuStartPosRef.current);
-    console.log('📷 DEJAVU - Câmera ativa:', renderingCamera === 'ar' ? 'AR Camera' : 'Main Camera');
-
-    // PASSO 2: Define posição final no centro absoluto (0, 0, 0)
-    dejavuTargetPosRef.current.set(0, 0, 0);
-
-    console.log('🎯 DEJAVU - Posição final:', dejavuTargetPosRef.current);
-
-    // PASSO 3: Inicia animação
-    dejavuStartTimeRef.current = performance.now();
-    setIsDejavuAnimating(true);
-    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag
-
-    // Desabilita gyroscópio se estiver ativo
-    if (gyroscopeMode) {
-      stopGyroscopeMode();
-      console.log('📱 Gyroscópio desativado durante Dejavu');
-    }
-
-    // Desabilita OrbitControls durante animação
-    if (controlsRef.current) {
-      controlsRef.current.enabled = false;
-      console.log('🎮 OrbitControls desabilitados durante Dejavu');
-    }
-
-    // PASSO 4: Loop de animação
-    const duration = 2500; // 2.5 segundos
-
-    const animate = () => {
-      const now = performance.now();
-      const elapsed = now - dejavuStartTimeRef.current;
-
-      // Calcula t (0 a 1)
-      let t = elapsed / duration;
-      t = Math.min(t, 1);
-
-      // Aplica easing suave
-      const smoothT = easeInOutCubic(t);
-
-      // Interpola posição com lerp
-      camera.position.lerpVectors(
-        dejavuStartPosRef.current,
-        dejavuTargetPosRef.current,
-        smoothT
-      );
-
-      // Sempre olha para o centro (foco cinematográfico)
-      camera.lookAt(0, 0, 0);
-
-      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, sobrepõe troca para câmera principal
-      if (t > 0.85 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
-        dejavuCameraSwitchScheduledRef.current = true; // Marca como executado
-        console.log('🎬 DEJAVU - Sobrepondo troca para Câmera Principal (t=' + t.toFixed(2) + ')');
-        stopARCamera();
-      }
-
-      // Continua animação ou finaliza
-      if (t < 1) {
-        dejavuAnimationRef.current = requestAnimationFrame(animate);
-      } else {
-        // Animação completa
-        setIsDejavuAnimating(false);
-        
-        // Reativa OrbitControls
-        if (controlsRef.current) {
-          controlsRef.current.enabled = true;
-          console.log('🎮 OrbitControls reativados após Dejavu');
-        }
-        
-        console.log('✅ DEJAVU - Animação completa');
-      }
-    };
-
-    animate();
-  };
-
-  /**
-   * 🛑 Cancela animação dejavu
-   */
-  const cancelDejavuAnimation = () => {
-    if (dejavuAnimationRef.current !== null) {
-      cancelAnimationFrame(dejavuAnimationRef.current);
-      dejavuAnimationRef.current = null;
-    }
-    setIsDejavuAnimating(false);
-    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag de agendamento
-    
-    // Reativa OrbitControls
-    if (controlsRef.current) {
-      controlsRef.current.enabled = true;
-    }
-    
-    console.log('🛑 DEJAVU - Animação cancelada');
   };
 
   /**
@@ -3900,7 +3780,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           0.01, // Near plane crítico para fake AR
           100   // Far plane - 1 unidade = 1 metro
         );
-        cameraAR.position.set(0, 0, 8); // Distância inicial maior para não nascer dentro dos objetos
+        cameraAR.position.set(0, 0, 10); // 📐 Câmera afastada para evitar nascer dentro dos objetos
         cameraAR.rotation.order = 'YXZ'; // Ordem correta para DeviceOrientation
         cameraARRef.current = cameraAR;
 
@@ -4039,10 +3919,21 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 model.position.set(0, 0, 0); // Nasce na origem
                 model.name = fileName;
                 
-                // 🌐 Detecta sphere.glb e ativa shader equirectangular automaticamente
+                // 🔄 Inverte normais do sphere.glb para efeito de skybox interno
                 const isSphere = fileName.toLowerCase().includes('sphere.glb');
                 if (isSphere) {
-                  console.log('🌐 Detectado sphere.glb - ativando shader equirectangular HDRI');
+                  console.log('🌐 Detectado sphere.glb - invertendo normais para skybox interno');
+                  model.traverse((child: THREE.Object3D) => {
+                    const mesh = child as THREE.Mesh;
+                    if (mesh.isMesh && mesh.geometry) {
+                      // Inverte a geometria no eixo X
+                      mesh.geometry.scale(-1, 1, 1);
+                      mesh.userData.normalState = 'inverted'; // Marca como invertido
+                      console.log('✅ Normais invertidas para:', mesh.name || 'mesh sem nome');
+                    }
+                  });
+                  // Adiciona ao Set de GLBs com normais invertidas
+                  setInvertedNormalsGLBs(prev => new Set(prev).add(fileName));
                 }
                 
                 // � Aplica shader PBR customizado aos GLBs
@@ -4067,12 +3958,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                   visible: true,
                   brightness: 1.0 // Brilho inicial
                 });
-                
-                // 🌐 Se for sphere.glb, adiciona ao equirectGLBs automaticamente
-                if (isSphere) {
-                  setEquirectGLBs(prev => new Set(prev).add(fileName));
-                  console.log('✅ sphere.glb adicionado automaticamente ao shader equirectangular HDRI');
-                }
                 
                 // Cleanup: modelo adicionado à cena, referências temporárias podem ser liberadas
                 console.log(`🧹 GLB loader: recursos temporários liberados para ${fileName}`);
@@ -4696,7 +4581,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 <button
                   onClick={async () => {
                     setShowCameraPrompt(false);
-                    await startARCamera();
+                    await startARExperience();
                   }}
                   className="bg-white text-blue-600 px-6 py-3 rounded-xl font-bold text-lg hover:bg-blue-50 transition-colors shadow-lg"
                 >
@@ -4758,7 +4643,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 console.log('👁️ sphere.glb mostrado ao voltar para AR');
               }
             } else {
-              startARCamera();
+              startARExperience();
             }
           }}
           className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors"
@@ -4899,36 +4784,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         )}
       </div>
 
-      {/* Botões fixos - canto inferior esquerdo */}
-      <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
-        {/* Botão Dejavu - Animação cinematográfica */}
-        <button
-          onClick={() => {
-            if (isDejavuAnimating) {
-              cancelDejavuAnimation();
-            } else {
-              startDejavuAnimation();
-            }
-          }}
-          disabled={!sceneEnabled}
-          className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors ${
-            isDejavuAnimating
-              ? 'bg-orange-500 hover:bg-orange-600 text-white'
-              : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white'
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
-          title={isDejavuAnimating ? 'Cancelar animação' : 'Travelling cinematográfico da câmera'}
-        >
-          {isDejavuAnimating ? (
-            <span className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-white animate-pulse"></div>
-              🎬 Animando...
-            </span>
-          ) : (
-            '🎬 Dejavu'
-          )}
-        </button>
-        
-        {/* Botão toggle debug overlay */}
+      {/* Botão para toggle debug overlay - canto inferior esquerdo */}
+      <div className="fixed bottom-4 left-4 z-[9999]">
         <button
           onClick={() => setShowDebugOverlay(!showDebugOverlay)}
           className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-semibold text-xs sm:text-sm shadow-lg transition-colors"

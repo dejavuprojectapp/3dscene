@@ -833,6 +833,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   }>>([]);
   const cameraARRef = useRef<THREE.PerspectiveCamera | null>(null);
   const deviceOrientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
+  const gyroOffsetRef = useRef({ azimuth: 0, polar: 0 }); // Offset acumulado do gyroscópio
+  const lastGyroUpdateRef = useRef(0); // Timestamp da última atualização
   const debugInfoRef = useRef<DebugInfo>({
     camera: { x: 0, y: 0, z: 0 },
     cameraRotation: { x: 0, y: 0, z: 0 },
@@ -3265,6 +3267,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         const permission = await (DeviceOrientationEvent as any).requestPermission();
         if (permission === 'granted') {
           window.addEventListener('deviceorientation', handleDeviceOrientation);
+          
+          // Reseta offsets e timestamp
+          gyroOffsetRef.current = { azimuth: 0, polar: 0 };
+          lastGyroUpdateRef.current = performance.now();
+          
           setGyroscopeMode(true);
           console.log('✅ Gyroscope Mode ativo (iOS)');
         } else {
@@ -3301,6 +3308,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         if (orientationReceived) {
           // Sensor funcionando, ativa o modo gyroscope
           window.addEventListener('deviceorientation', handleDeviceOrientation);
+          
+          // Reseta offsets e timestamp
+          gyroOffsetRef.current = { azimuth: 0, polar: 0 };
+          lastGyroUpdateRef.current = performance.now();
+          
           setGyroscopeMode(true);
           console.log('✅ Gyroscope Mode ativo (Android)');
         } else {
@@ -3319,6 +3331,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     if (typeof window !== 'undefined') {
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
     }
+    
+    // Reseta offsets e estado
+    gyroOffsetRef.current = { azimuth: 0, polar: 0 };
+    lastGyroUpdateRef.current = 0;
+    
     setGyroscopeMode(false);
     isInitialOrientationSet.current = false;
     console.log('✅ Gyroscope Mode desativado');
@@ -3970,34 +3987,55 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             });
           }
           
-          // 📱 Gyroscope Mode: Controla câmera com orientação do dispositivo
+          // 📱 Gyroscope Mode: Adiciona movimento do gyroscópio aos controles existentes
           if (gyroscopeMode && !useARCamera) {
-            const { alpha, beta, gamma } = deviceOrientationRef.current;
+            const currentTime = performance.now();
+            const deltaTime = (currentTime - lastGyroUpdateRef.current) / 1000; // segundos
+            lastGyroUpdateRef.current = currentTime;
+            
+            const { alpha, beta } = deviceOrientationRef.current;
             const initial = initialOrientationRef.current;
             
             // Calcula a diferença da orientação atual em relação à inicial
-            const deltaAlpha = (alpha - initial.alpha) * 0.5; // Sensibilidade reduzida
-            const deltaBeta = (beta - initial.beta) * 0.5;
+            const deltaAlpha = (alpha - initial.alpha);
+            const deltaBeta = (beta - initial.beta);
             
-            // Aplica rotação à câmera (yaw e pitch)
-            // Usa controles do OrbitControls para manter consistência
-            controls.autoRotate = false;
+            // Sensibilidade ajustável (graus por segundo)
+            const sensitivity = 0.003; // Menor = mais suave
             
-            // Rotação horizontal (yaw) - baseada em alpha
-            const targetAzimuth = THREE.MathUtils.degToRad(deltaAlpha);
-            controls.minAzimuthAngle = targetAzimuth;
-            controls.maxAzimuthAngle = targetAzimuth;
+            // Acumula o offset do gyroscópio de forma incremental
+            gyroOffsetRef.current.azimuth += deltaAlpha * sensitivity * deltaTime;
+            gyroOffsetRef.current.polar += deltaBeta * sensitivity * deltaTime;
             
-            // Rotação vertical (pitch) - baseada em beta
-            const targetPolar = THREE.MathUtils.degToRad(90 - deltaBeta);
-            controls.minPolarAngle = Math.max(0, Math.min(Math.PI, targetPolar));
-            controls.maxPolarAngle = Math.max(0, Math.min(Math.PI, targetPolar));
-          } else if (!gyroscopeMode && !useARCamera) {
-            // Reseta limites de rotação quando gyroscope mode está desativado
-            controls.minAzimuthAngle = -Infinity;
-            controls.maxAzimuthAngle = Infinity;
-            controls.minPolarAngle = 0;
-            controls.maxPolarAngle = Math.PI;
+            // Limita o ângulo polar para não inverter
+            gyroOffsetRef.current.polar = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, gyroOffsetRef.current.polar));
+            
+            // Aplica o offset à posição da câmera de forma esférica
+            const spherical = new THREE.Spherical();
+            spherical.setFromVector3(camera.position.clone().sub(controls.target));
+            
+            // Adiciona o offset do gyroscópio aos ângulos atuais
+            spherical.theta += gyroOffsetRef.current.azimuth * 0.1; // Azimuth (horizontal)
+            spherical.phi += gyroOffsetRef.current.polar * 0.1; // Polar (vertical)
+            
+            // Limita phi para não inverter a câmera
+            spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
+            
+            // Converte de volta para coordenadas cartesianas
+            const newPosition = new THREE.Vector3();
+            newPosition.setFromSpherical(spherical);
+            newPosition.add(controls.target);
+            
+            // Aplica a nova posição com interpolação suave
+            camera.position.lerp(newPosition, 0.1);
+            
+            // Reseta o offset após aplicar (para não acumular indefinidamente)
+            gyroOffsetRef.current.azimuth *= 0.9;
+            gyroOffsetRef.current.polar *= 0.9;
+            
+            // Atualiza a orientação inicial para a próxima iteração
+            initialOrientationRef.current.alpha = alpha;
+            initialOrientationRef.current.beta = beta;
           }
           
           // Atualiza controles apenas para câmera principal

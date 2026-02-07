@@ -818,7 +818,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const composerRef = useRef<EffectComposer | null>(null); // Ref para o EffectComposer
   const sceneRef = useRef<THREE.Scene | null>(null); // Ref para a cena Three.js
   const bgTextureRef = useRef<THREE.Texture | null>(null); // Ref para a textura de fundo carregada
-  const bgTextureButtonRef = useRef<HTMLButtonElement | null>(null); // Ref para o botão de background texture
   const sceneObjectsRef = useRef<Array<{ 
     name: string; 
     object: THREE.Object3D; 
@@ -847,14 +846,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const targetPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo calculada do device
   const currentPositionRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição atual suavizada
   const smoothingFactorRef = useRef(0.15); // Fator de suavização (0.05 = suave, 0.3 = responsivo)
-  
-  // 🌀 DEJAVU - Refs para animação cinematográfica de câmera
-  const dejavuAnimationRef = useRef<number | null>(null); // RequestAnimationFrame ID
-  const dejavuStartPosRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição inicial salva
-  const dejavuTargetPosRef = useRef<THREE.Vector3>(new THREE.Vector3()); // Posição alvo (origem)
-  const dejavuStartTimeRef = useRef(0); // Timestamp do início da animação
-  const dejavuCameraSwitchScheduledRef = useRef(false); // Flag para evitar múltiplos agendamentos
-  const [isDejavuAnimating, setIsDejavuAnimating] = useState(false); // Estado da animação
   const debugInfoRef = useRef<DebugInfo>({
     camera: { x: 0, y: 0, z: 0 },
     cameraRotation: { x: 0, y: 0, z: 0 },
@@ -3001,133 +2992,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     };
   }, []);
 
-  // � DEJAVU - Função de easing para movimento suave (curva cúbica)
-  const easeInOutCubic = (t: number): number => {
-    return t < 0.5
-      ? 4 * t * t * t
-      : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  };
-
-  // 🌀 DEJAVU - Anima câmera até a origem (0, 0, 0) com movimento cinematográfico
-  const travelCameraToOrigin = (duration: number = 2500) => {
-    if (!activeCameraRef.current) {
-      console.warn('⚠️ Câmera não disponível para animação Dejavu');
-      return;
-    }
-
-    const camera = activeCameraRef.current as THREE.PerspectiveCamera;
-
-    // PASSO 1: Salva posição inicial
-    dejavuStartPosRef.current.copy(camera.position);
-    console.log('🌀 DEJAVU - Posição inicial salva:', {
-      x: dejavuStartPosRef.current.x.toFixed(2),
-      y: dejavuStartPosRef.current.y.toFixed(2),
-      z: dejavuStartPosRef.current.z.toFixed(2)
-    });
-
-    // PASSO 2: Define posição alvo na origem (0, 0, 0)
-    dejavuTargetPosRef.current.set(0, 0, 0);
-    
-    console.log('🎯 DEJAVU - Posição alvo:', {
-      x: dejavuTargetPosRef.current.x.toFixed(2),
-      y: dejavuTargetPosRef.current.y.toFixed(2),
-      z: dejavuTargetPosRef.current.z.toFixed(2),
-      duration: duration + 'ms'
-    });
-
-    // PASSO 3: Inicia animação
-    dejavuStartTimeRef.current = performance.now();
-    setIsDejavuAnimating(true);
-    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag
-
-    // Desabilita gyroscópio se estiver ativo
-    if (gyroscopeMode) {
-      stopGyroscopeMode();
-      console.log('🎮 Gyroscópio desabilitado para animação Dejavu');
-    }
-
-    // Desabilita OrbitControls temporariamente
-    if (controlsRef.current) {
-      controlsRef.current.enabled = false;
-      console.log('🎮 OrbitControls desabilitados para animação Dejavu');
-    }
-
-    // Função de animação (recursiva via requestAnimationFrame)
-    const animate = () => {
-      const now = performance.now();
-      const elapsed = now - dejavuStartTimeRef.current;
-      let t = Math.min(elapsed / duration, 1); // Normaliza 0-1
-
-      // Aplica easing para movimento suave (não-linear)
-      t = easeInOutCubic(t);
-
-      // Interpola posição: lerp entre startPos e targetPos
-      const newPos = new THREE.Vector3().lerpVectors(
-        dejavuStartPosRef.current,
-        dejavuTargetPosRef.current,
-        t
-      );
-
-      camera.position.copy(newPos);
-      // Sempre olha para o centro (foco cinematográfico)
-      camera.lookAt(0, 0, 0);
-
-      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, agenda troca para câmera principal
-      if (t > 0.85 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
-        dejavuCameraSwitchScheduledRef.current = true; // Marca como agendado
-        
-        // Calcula delay baseado no tempo restante (sem delay adicional)
-        const timeToFinish = duration * (1 - t); // Tempo até t=1
-        
-        console.log('🎬 DEJAVU - Trocando para Câmera Principal ao final da animação (', timeToFinish.toFixed(0), 'ms)');
-        
-        setTimeout(() => {
-          if (renderingCamera === 'ar') {
-            console.log('📷 DEJAVU - Ativando Câmera Principal automaticamente');
-            stopARCamera();
-          }
-        }, timeToFinish);
-      }
-
-      // Continua animação ou finaliza
-      if (t < 1) {
-        dejavuAnimationRef.current = requestAnimationFrame(animate);
-      } else {
-        console.log('✅ DEJAVU - Animação concluída');
-        setIsDejavuAnimating(false);
-        dejavuCameraSwitchScheduledRef.current = false;
-        
-        // Reativa OrbitControls se não estiver em gyro mode
-        if (controlsRef.current && !gyroscopeMode) {
-          controlsRef.current.enabled = true;
-          console.log('🎮 OrbitControls reativados');
-        }
-      }
-    };
-
-    // Inicia loop de animação
-    animate();
-  };
-
-  // 🌀 DEJAVU - Cancela animação em andamento
-  const cancelDejavuAnimation = () => {
-    if (dejavuAnimationRef.current !== null) {
-      cancelAnimationFrame(dejavuAnimationRef.current);
-      dejavuAnimationRef.current = null;
-    }
-    setIsDejavuAnimating(false);
-    dejavuCameraSwitchScheduledRef.current = false; // Reseta flag de agendamento
-    
-    // Reativa OrbitControls
-    if (controlsRef.current && !gyroscopeMode) {
-      controlsRef.current.enabled = true;
-      console.log('🎮 OrbitControls reativados após cancelamento');
-    }
-    
-    console.log('🛑 DEJAVU - Animação cancelada');
-  };
-
-  // �🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
+  // 🎬 Inicializa a experiência AR: carrega cena primeiro, depois ativa câmera
   const startARExperience = async () => {
     console.log('🎬 Iniciando experiência AR...');
     
@@ -3141,22 +3006,16 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     console.log('📹 Ativando câmera AR...');
     await startARCamera();
     
-    // PASSO 3: Garante que background texture está desabilitado em modo AR
-    // Aguarda um pouco para textura carregar antes de inverter estado
+    // PASSO 3: Clica no botão de background texture automaticamente
+    // Aguarda um pouco para textura carregar antes de clicar
     setTimeout(() => {
-      if (bgTextureRef.current && bgTextureEnabled) {
-        toggleBackgroundTexture(false);
-        console.log('🔲 Background texture desabilitado automaticamente após iniciar AR');
+      if (bgTextureRef.current) {
+        // Simula clique no botão de background texture
+        const currentState = bgTextureEnabled;
+        toggleBackgroundTexture(!currentState);
+        console.log('🖼️ Clique automático no botão Background Texture executado');
       }
     }, 500);
-    
-    // PASSO 4 (ÚLTIMA AÇÃO): Clica no botão de background texture para sincronizar UI
-    setTimeout(() => {
-      if (bgTextureButtonRef.current && bgTextureRef.current) {
-        console.log('🔘 Clicando no botão de background texture (última ação)');
-        bgTextureButtonRef.current.click();
-      }
-    }, 800);
   };
 
   // Inicializa webcam/câmera traseira
@@ -4799,27 +4658,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           {renderingCamera === 'ar' ? '📷 Câmera Principal' : '📱 Câmera AR'}
         </button>
         
-        {/* Botão Dejavu - Animação cinematográfica para origem (apenas em modo AR) */}
-        {renderingCamera === 'ar' && (
-          <button
-            onClick={() => {
-              if (isDejavuAnimating) {
-                cancelDejavuAnimation();
-              } else {
-                travelCameraToOrigin(2500); // 2.5 segundos de animação
-              }
-            }}
-            className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-all ${
-              isDejavuAnimating
-                ? 'bg-red-500 hover:bg-red-600 text-white scale-105'
-                : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white hover:scale-105'
-            }`}
-            title={isDejavuAnimating ? 'Cancelar animação Dejavu' : 'Animar câmera até o centro'}
-          >
-            {isDejavuAnimating ? '🛑 Cancelar' : '🌀 Dejavu'}
-          </button>
-        )}
-        
         {/* Botão para Gyroscope Mode (apenas mobile e quando não está renderizando AR) */}
         {isMobile && renderingCamera === 'main' && (
           <>
@@ -5136,7 +4974,6 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
               {texturePath.split('/').pop()}
             </p>
             <button
-              ref={bgTextureButtonRef}
               onClick={() => toggleBackgroundTexture(!bgTextureEnabled)}
               disabled={!bgTextureRef.current}
               className={`w-full py-1 px-2 rounded text-[9px] font-semibold ${

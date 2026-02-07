@@ -3999,6 +3999,9 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             const { alpha, beta } = deviceOrientationRef.current;
             const initial = initialOrientationRef.current;
             
+            console.log('📲 Gyroscope MODE ATIVO - alpha:', alpha.toFixed(2), 'beta:', beta.toFixed(2));
+            console.log('📍 Initial - alpha:', initial.alpha.toFixed(2), 'beta:', initial.beta.toFixed(2));
+            
             // Calcula a diferença da orientação atual em relação à inicial
             let deltaAlpha = alpha - initial.alpha;
             let deltaBeta = beta - initial.beta;
@@ -4010,13 +4013,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             console.log('🔄 Gyroscope delta - alpha:', deltaAlpha.toFixed(2), 'beta:', deltaBeta.toFixed(2));
             
             // Sensibilidade: converte graus em radianos para rotação
-            const sensitivity = 0.002; // Ajuste conforme necessário
+            const sensitivity = 0.02; // Aumentado para ser mais perceptível
+            
+            const rotationLeft = deltaAlpha * sensitivity;
+            const rotationUp = -deltaBeta * sensitivity;
+            
+            console.log('🎯 Aplicando rotação - left:', rotationLeft.toFixed(4), 'up:', rotationUp.toFixed(4));
             
             // Usa os métodos do OrbitControls para rotacionar (como se fosse touch/mouse)
             // rotateLeft: rotação horizontal (azimuth) - positivo = esquerda
             // rotateUp: rotação vertical (polar) - positivo = para cima
-            controls.rotateLeft(deltaAlpha * sensitivity);
-            controls.rotateUp(-deltaBeta * sensitivity);
+            controls.rotateLeft(rotationLeft);
+            controls.rotateUp(rotationUp);
             
             // Atualiza a orientação inicial para a próxima frame
             initialOrientationRef.current.alpha = alpha;
@@ -4024,8 +4032,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           }
           
           // Atualiza controles apenas para câmera principal
-          if (!useARCamera) {
-            controls.update();
+          if (!useARCamera && controlsRef.current) {
+            controlsRef.current.update();
           }
           
           // Renderiza a cena com post-processing (vignette)

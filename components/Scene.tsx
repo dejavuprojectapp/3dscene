@@ -806,6 +806,8 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [frameCount, setFrameCount] = useState(0);
   const [useARCamera, setUseARCamera] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
+  const [gyroscopeMode, setGyroscopeMode] = useState(false); // Controle por rotação do dispositivo
+  const [isMobile, setIsMobile] = useState(false); // Detecta se é dispositivo móvel
   const [bgTextureEnabled, setBgTextureEnabled] = useState(false); // Controla se a textura de fundo está ativa
   const [isTransitioning, setIsTransitioning] = useState(false); // Controla se está em transição entre câmeras
   const [transitionProgress, setTransitionProgress] = useState(0); // 0.0 a 1.0 - progresso da transição
@@ -955,6 +957,33 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const [cursorPointer, setCursorPointer] = useState(false);
 
   // --- HOOKS DEVEM FICAR AQUI, NO TOPO DO COMPONENTE ---
+  
+  // 📱 Detecta se é dispositivo móvel
+  useEffect(() => {
+    const checkMobile = () => {
+      const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera;
+      const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+      const isMobileDevice = mobileRegex.test(userAgent) || window.innerWidth <= 768;
+      setIsMobile(isMobileDevice);
+      console.log('📱 Dispositivo móvel detectado:', isMobileDevice);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+    };
+  }, []);
+  
+  // 📱 Desativa gyroscope mode quando AR camera é ativada
+  useEffect(() => {
+    if (useARCamera && gyroscopeMode) {
+      stopGyroscopeMode();
+      console.log('📱 Gyroscope Mode desativado automaticamente ao ativar câmera AR');
+    }
+  }, [useARCamera]);
+  
   useEffect(() => {
     if (vignettePassRef.current) {
       vignettePassRef.current.uniforms['offset'].value = vignetteOffset;
@@ -3181,7 +3210,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
 
   const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
     // Salva orientação inicial como referência
-    if (!isInitialOrientationSet.current && useARCamera) {
+    if (!isInitialOrientationSet.current && (useARCamera || gyroscopeMode)) {
       initialOrientationRef.current = {
         alpha: event.alpha || 0,
         beta: event.beta || 0,
@@ -3210,7 +3239,48 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     }
   };
 
-  // 🗑️ Função para limpar múltiplas cenas e objetos duplicados
+  // � Funções de Gyroscope Mode
+  const startGyroscopeMode = async () => {
+    console.log('📱 Iniciando Gyroscope Mode...');
+    
+    // Reseta orientação inicial
+    isInitialOrientationSet.current = false;
+    
+    // Solicita permissão para DeviceOrientation (iOS 13+)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const permission = await (DeviceOrientationEvent as any).requestPermission();
+        if (permission === 'granted') {
+          window.addEventListener('deviceorientation', handleDeviceOrientation);
+          setGyroscopeMode(true);
+          console.log('✅ Gyroscope Mode ativo');
+        } else {
+          console.warn('⚠️ Permissão DeviceOrientation negada');
+          alert('Permissão de orientação negada. Ative nas configurações do navegador.');
+        }
+      } catch (error) {
+        console.error('❌ Erro ao solicitar DeviceOrientation:', error);
+        alert('Erro ao ativar gyroscope. Verifique as permissões.');
+      }
+    } else {
+      // Navegadores que não precisam de permissão explícita
+      window.addEventListener('deviceorientation', handleDeviceOrientation);
+      setGyroscopeMode(true);
+      console.log('✅ Gyroscope Mode ativo');
+    }
+  };
+
+  const stopGyroscopeMode = () => {
+    console.log('📱 Desativando Gyroscope Mode...');
+    window.removeEventListener('deviceorientation', handleDeviceOrientation);
+    setGyroscopeMode(false);
+    isInitialOrientationSet.current = false;
+    console.log('✅ Gyroscope Mode desativado');
+  };
+
+  // �🗑️ Função para limpar múltiplas cenas e objetos duplicados
   const deleteMultipleScenesAndDuplicates = () => {
     console.log('🧹 Iniciando limpeza de múltiplas cenas e duplicados...');
     
@@ -3506,6 +3576,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
+        controls.enablePan = false; // Desabilita pan (movimento lateral)
         controls.screenSpacePanning = false; // Mantém Z como up durante pan
         controls.maxPolarAngle = Math.PI; // Permite rotação completa
 
@@ -3855,6 +3926,36 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             });
           }
           
+          // 📱 Gyroscope Mode: Controla câmera com orientação do dispositivo
+          if (gyroscopeMode && !useARCamera) {
+            const { alpha, beta, gamma } = deviceOrientationRef.current;
+            const initial = initialOrientationRef.current;
+            
+            // Calcula a diferença da orientação atual em relação à inicial
+            const deltaAlpha = (alpha - initial.alpha) * 0.5; // Sensibilidade reduzida
+            const deltaBeta = (beta - initial.beta) * 0.5;
+            
+            // Aplica rotação à câmera (yaw e pitch)
+            // Usa controles do OrbitControls para manter consistência
+            controls.autoRotate = false;
+            
+            // Rotação horizontal (yaw) - baseada em alpha
+            const targetAzimuth = THREE.MathUtils.degToRad(deltaAlpha);
+            controls.minAzimuthAngle = targetAzimuth;
+            controls.maxAzimuthAngle = targetAzimuth;
+            
+            // Rotação vertical (pitch) - baseada em beta
+            const targetPolar = THREE.MathUtils.degToRad(90 - deltaBeta);
+            controls.minPolarAngle = Math.max(0, Math.min(Math.PI, targetPolar));
+            controls.maxPolarAngle = Math.max(0, Math.min(Math.PI, targetPolar));
+          } else if (!gyroscopeMode && !useARCamera) {
+            // Reseta limites de rotação quando gyroscope mode está desativado
+            controls.minAzimuthAngle = -Infinity;
+            controls.maxAzimuthAngle = Infinity;
+            controls.minPolarAngle = 0;
+            controls.maxPolarAngle = Math.PI;
+          }
+          
           // Atualiza controles apenas para câmera principal
           if (!useARCamera) {
             controls.update();
@@ -4202,6 +4303,27 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
         >
           {useARCamera ? '📷 Câmera Principal' : '📱 Câmera AR'}
         </button>
+        
+        {/* Botão para Gyroscope Mode (apenas mobile) */}
+        {isMobile && !useARCamera && (
+          <button
+            onClick={() => {
+              if (gyroscopeMode) {
+                stopGyroscopeMode();
+              } else {
+                startGyroscopeMode();
+              }
+            }}
+            className={`px-4 py-2 rounded-lg font-semibold text-sm shadow-lg transition-colors ${
+              gyroscopeMode
+                ? 'bg-orange-500 hover:bg-orange-600 text-white'
+                : 'bg-gray-600 hover:bg-gray-700 text-white'
+            }`}
+            title={gyroscopeMode ? 'Desativar controle por rotação' : 'Ativar controle por rotação'}
+          >
+            {gyroscopeMode ? '📱 Gyro ON' : '📱 Gyro OFF'}
+          </button>
+        )}
         
         {/* Botão para toggle debug overlay */}
         <button

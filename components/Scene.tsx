@@ -2996,26 +2996,24 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
   const startARExperience = async () => {
     console.log('🎬 Iniciando experiência AR...');
     
-    // PASSO 1: Setar renderingCamera para 'ar' ANTES de ativar a cena
-    // Isso previne que a textura seja ativada automaticamente como background
-    setRenderingCamera('ar');
-    console.log('📷 RenderingCamera setado para AR preventivamente');
-    
-    // PASSO 2: Ativar cena se ainda não estiver ativa
+    // PASSO 1: Ativar cena se ainda não estiver ativa
     if (!sceneEnabled) {
       console.log('📦 Carregando cena com objetos e textura...');
       setSceneEnabled(true);
     }
     
-    // PASSO 3: Ativar câmera AR (cena carrega de forma assíncrona)
+    // PASSO 2: Ativar câmera AR (cena carrega de forma assíncrona)
     console.log('📹 Ativando câmera AR...');
     await startARCamera();
     
-    // PASSO 4: Garantir que background texture fique desabilitado ao iniciar em AR
-    if (bgTextureEnabled) {
-      toggleBackgroundTexture(false);
-      console.log('🔲 Background texture desabilitado ao iniciar experiência AR');
-    }
+    // PASSO 3: Garante que background texture está desabilitado em modo AR
+    // Aguarda um pouco para textura carregar antes de inverter estado
+    setTimeout(() => {
+      if (bgTextureRef.current && bgTextureEnabled) {
+        toggleBackgroundTexture(false);
+        console.log('🔲 Background texture desabilitado automaticamente após iniciar AR');
+      }
+    }, 500);
   };
 
   // Inicializa webcam/câmera traseira
@@ -3729,18 +3727,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 bgTextureRef.current = texture;
                 console.log('✅ Textura HDR carregada:', texturePath);
                 
-                // Habilita automaticamente o background APENAS se:
-                // 1. Cena estiver ativa
-                // 2. Não estiver em modo AR (useARCamera ou renderingCamera)
-                if (sceneRef.current && !useARCamera && renderingCamera !== 'ar') {
+                // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
+                if (sceneRef.current && !useARCamera) {
                   sceneRef.current.environment = texture;
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                } else if (sceneRef.current) {
-                  // Apenas environment (iluminação), sem background visual
-                  sceneRef.current.environment = texture;
-                  console.log('🌐 Environment ativo, background desabilitado (modo AR)');
                 }
               },
               undefined,
@@ -3758,18 +3750,12 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
                 bgTextureRef.current = texture;
                 console.log('✅ Textura carregada:', texturePath);
                 
-                // Habilita automaticamente o background APENAS se:
-                // 1. Cena estiver ativa
-                // 2. Não estiver em modo AR (useARCamera ou renderingCamera)
-                if (sceneRef.current && !useARCamera && renderingCamera !== 'ar') {
+                // Habilita automaticamente o background se a cena estiver ativa e não estiver em modo AR
+                if (sceneRef.current && !useARCamera) {
                   sceneRef.current.environment = texture;
                   sceneRef.current.background = texture;
                   setBgTextureEnabled(true);
                   console.log('🖼️ Background texture ativado automaticamente');
-                } else if (sceneRef.current) {
-                  // Apenas environment (iluminação), sem background visual
-                  sceneRef.current.environment = texture;
-                  console.log('🌐 Environment ativo, background desabilitado (modo AR)');
                 }
               },
               undefined,

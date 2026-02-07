@@ -3987,55 +3987,39 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
             });
           }
           
-          // 📱 Gyroscope Mode: Adiciona movimento do gyroscópio aos controles existentes
-          if (gyroscopeMode && !useARCamera) {
-            const currentTime = performance.now();
-            const deltaTime = (currentTime - lastGyroUpdateRef.current) / 1000; // segundos
-            lastGyroUpdateRef.current = currentTime;
-            
+          // 📱 Gyroscope Mode: Usa orientação do dispositivo para controlar diretamente a câmera
+          if (gyroscopeMode && !useARCamera && controls) {
             const { alpha, beta } = deviceOrientationRef.current;
-            const initial = initialOrientationRef.current;
             
-            // Calcula a diferença da orientação atual em relação à inicial
-            const deltaAlpha = (alpha - initial.alpha);
-            const deltaBeta = (beta - initial.beta);
-            
-            // Sensibilidade ajustável (graus por segundo)
-            const sensitivity = 0.003; // Menor = mais suave
-            
-            // Acumula o offset do gyroscópio de forma incremental
-            gyroOffsetRef.current.azimuth += deltaAlpha * sensitivity * deltaTime;
-            gyroOffsetRef.current.polar += deltaBeta * sensitivity * deltaTime;
-            
-            // Limita o ângulo polar para não inverter
-            gyroOffsetRef.current.polar = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, gyroOffsetRef.current.polar));
-            
-            // Aplica o offset à posição da câmera de forma esférica
+            // Pega a posição atual da câmera em coordenadas esféricas
             const spherical = new THREE.Spherical();
             spherical.setFromVector3(camera.position.clone().sub(controls.target));
             
-            // Adiciona o offset do gyroscópio aos ângulos atuais
-            spherical.theta += gyroOffsetRef.current.azimuth * 0.1; // Azimuth (horizontal)
-            spherical.phi += gyroOffsetRef.current.polar * 0.1; // Polar (vertical)
+            // Mapeia alpha (rotação do dispositivo em torno de Z, 0-360°) para theta (azimuth)
+            // Alpha: 0° = Norte, aumenta no sentido horário
+            const targetTheta = THREE.MathUtils.degToRad(-alpha);
+            
+            // Mapeia beta (inclinação frontal/traseira do dispositivo, -180 a 180°) para phi (polar)
+            // Beta: 0° = dispositivo na horizontal, 90° = em pé olhando para frente
+            // Phi: 0° = olhando para cima, 90° = olhando para horizonte, 180° = olhando para baixo
+            const targetPhi = THREE.MathUtils.degToRad(90 - beta);
+            
+            // Interpola suavemente entre a posição atual e a target
+            const lerpFactor = 0.15; // Quanto mais próximo de 1, mais rápido
+            spherical.theta = THREE.MathUtils.lerp(spherical.theta, targetTheta, lerpFactor);
+            spherical.phi = THREE.MathUtils.lerp(spherical.phi, targetPhi, lerpFactor);
             
             // Limita phi para não inverter a câmera
-            spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
+            spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
             
             // Converte de volta para coordenadas cartesianas
             const newPosition = new THREE.Vector3();
             newPosition.setFromSpherical(spherical);
             newPosition.add(controls.target);
             
-            // Aplica a nova posição com interpolação suave
-            camera.position.lerp(newPosition, 0.1);
-            
-            // Reseta o offset após aplicar (para não acumular indefinidamente)
-            gyroOffsetRef.current.azimuth *= 0.9;
-            gyroOffsetRef.current.polar *= 0.9;
-            
-            // Atualiza a orientação inicial para a próxima iteração
-            initialOrientationRef.current.alpha = alpha;
-            initialOrientationRef.current.beta = beta;
+            // Aplica a nova posição
+            camera.position.copy(newPosition);
+            camera.lookAt(controls.target);
           }
           
           // Atualiza controles apenas para câmera principal

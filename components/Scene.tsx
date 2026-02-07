@@ -3379,23 +3379,11 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
       // Sempre olha para o centro (foco cinematográfico)
       camera.lookAt(0, 0, 0);
 
-      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, agenda troca para câmera principal
-      if (t > 0.9 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
-        dejavuCameraSwitchScheduledRef.current = true; // Marca como agendado
-        
-        // Calcula delay baseado no tempo restante + tempo adicional
-        const timeToFinish = duration * (1 - t); // Tempo até t=1
-        const additionalDelay = 500; // 500ms extra após chegar em (0,0,0)
-        const totalDelay = timeToFinish + additionalDelay;
-        
-        console.log('🎬 DEJAVU - Agendando troca para Câmera Principal em', totalDelay.toFixed(0), 'ms');
-        
-        setTimeout(() => {
-          if (renderingCamera === 'ar') {
-            console.log('📷 DEJAVU - Ativando Câmera Principal automaticamente');
-            stopARCamera();
-          }
-        }, totalDelay);
+      // 📷 AÇÃO SECUNDÁRIA: Quando próximo do fim e em AR mode, sobrepõe troca para câmera principal
+      if (t > 0.85 && !dejavuCameraSwitchScheduledRef.current && renderingCamera === 'ar') {
+        dejavuCameraSwitchScheduledRef.current = true; // Marca como executado
+        console.log('🎬 DEJAVU - Sobrepondo troca para Câmera Principal (t=' + t.toFixed(2) + ')');
+        stopARCamera();
       }
 
       // Continua animação ou finaliza
@@ -3912,7 +3900,7 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
           0.01, // Near plane crítico para fake AR
           100   // Far plane - 1 unidade = 1 metro
         );
-        cameraAR.position.set(0, 0, 0); // Câmera na origem
+        cameraAR.position.set(0, 0, 8); // Distância inicial maior para não nascer dentro dos objetos
         cameraAR.rotation.order = 'YXZ'; // Ordem correta para DeviceOrientation
         cameraARRef.current = cameraAR;
 

@@ -3011,12 +3011,18 @@ export default function Scene({ modelPaths, texturePath }: SceneProps) {
     await startARCamera();
     console.log('✅ Modo câmera AR ativado');
     
-    // PASSO 3: Ativar background texture automaticamente
+    // PASSO 3: Ativar background texture automaticamente e depois desativar
     console.log('🖼️ PASSO 3: Ativando background texture...');
     setTimeout(() => {
       if (bgTextureRef.current) {
         toggleBackgroundTexture(true);
-        console.log('✅ Background texture ativado automaticamente');
+        console.log('✅ Background texture ativado');
+        
+        // Ação final: Desativa background texture após 1 segundo
+        setTimeout(() => {
+          toggleBackgroundTexture(false);
+          console.log('🔲 Ação final: Background texture desativado automaticamente');
+        }, 1000);
       }
     }, 500); // Pequeno delay para garantir que a cena AR está pronta
   };
